@@ -1,5 +1,8 @@
+use std::io::{BufRead, BufReader, Read};
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -166,34 +169,25 @@ fn node_command_prints_configured_advertise_address() {
 #[test]
 fn two_cli_nodes_exchange_a_mined_block() {
     let _guard = multi_node_test_guard();
-    let addr_a = reserve_local_addr();
-    let addr_b = reserve_local_addr();
-
-    let node_a = Command::new(chesscoin_bin())
-        .args([
-            "node",
-            "--listen",
-            &addr_a,
-            "--run-ms",
-            "2500",
-            "--difficulty",
-            "0",
-            "--steps",
-            "4",
-            "--samples",
-            "4",
-        ])
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("node a starts");
-
-    thread::sleep(Duration::from_millis(150));
+    let (node_a, addr_a) = spawn_node_and_wait_for_listening(&[
+        "node",
+        "--listen",
+        "127.0.0.1:0",
+        "--run-ms",
+        "2500",
+        "--difficulty",
+        "0",
+        "--steps",
+        "4",
+        "--samples",
+        "4",
+    ]);
 
     let output_b = Command::new(chesscoin_bin())
         .args([
             "node",
             "--listen",
-            &addr_b,
+            "127.0.0.1:0",
             "--peer",
             &addr_a,
             "--mine-once",
@@ -209,14 +203,20 @@ fn two_cli_nodes_exchange_a_mined_block() {
         .output()
         .expect("node b runs");
 
+    let output_a = node_a.wait();
+
     assert!(output_b.status.success());
     let stdout_b = String::from_utf8_lossy(&output_b.stdout);
     assert!(stdout_b.contains("final height         1"), "{stdout_b}");
     assert!(stdout_b.contains("mined blocks         1"), "{stdout_b}");
 
-    let output_a = node_a.wait_with_output().expect("node a exits");
-    assert!(output_a.status.success());
-    let stdout_a = String::from_utf8_lossy(&output_a.stdout);
+    assert!(
+        output_a.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output_a.stdout,
+        output_a.stderr
+    );
+    let stdout_a = output_a.stdout;
 
     assert!(stdout_a.contains("final height         1"), "{stdout_a}");
     assert!(stdout_a.contains("accepted blocks      1"), "{stdout_a}");
@@ -226,27 +226,20 @@ fn two_cli_nodes_exchange_a_mined_block() {
 #[test]
 fn late_cli_node_syncs_existing_block_from_peer() {
     let _guard = multi_node_test_guard();
-    let addr_a = reserve_local_addr();
-    let addr_b = reserve_local_addr();
-
-    let node_a = Command::new(chesscoin_bin())
-        .args([
-            "node",
-            "--listen",
-            &addr_a,
-            "--mine-once",
-            "--run-ms",
-            "1600",
-            "--difficulty",
-            "0",
-            "--steps",
-            "4",
-            "--samples",
-            "4",
-        ])
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("node a starts");
+    let (node_a, addr_a) = spawn_node_and_wait_for_listening(&[
+        "node",
+        "--listen",
+        "127.0.0.1:0",
+        "--mine-once",
+        "--run-ms",
+        "1600",
+        "--difficulty",
+        "0",
+        "--steps",
+        "4",
+        "--samples",
+        "4",
+    ]);
 
     thread::sleep(Duration::from_millis(300));
 
@@ -254,7 +247,7 @@ fn late_cli_node_syncs_existing_block_from_peer() {
         .args([
             "node",
             "--listen",
-            &addr_b,
+            "127.0.0.1:0",
             "--peer",
             &addr_a,
             "--sync-interval-ms",
@@ -271,6 +264,8 @@ fn late_cli_node_syncs_existing_block_from_peer() {
         .output()
         .expect("node b runs");
 
+    let output_a = node_a.wait();
+
     let stdout_b = String::from_utf8_lossy(&output_b.stdout);
     let stderr_b = String::from_utf8_lossy(&output_b.stderr);
     assert!(
@@ -280,8 +275,12 @@ fn late_cli_node_syncs_existing_block_from_peer() {
     assert!(stdout_b.contains("final height         1"), "{stdout_b}");
     assert!(stdout_b.contains("synced blocks        1"), "{stdout_b}");
 
-    let output_a = node_a.wait_with_output().expect("node a exits");
-    assert!(output_a.status.success());
+    assert!(
+        output_a.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output_a.stdout,
+        output_a.stderr
+    );
 }
 
 #[test]
@@ -355,14 +354,76 @@ fn node_command_reads_config_file() {
     );
 }
 
-fn reserve_local_addr() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve local port");
-    listener.local_addr().expect("local addr").to_string()
-}
-
 fn multi_node_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("multi-node test lock")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct RunningCliNode {
+    child: Child,
+    stdout_reader: thread::JoinHandle<String>,
+}
+
+struct CliNodeOutput {
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+impl RunningCliNode {
+    fn wait(mut self) -> CliNodeOutput {
+        let status = self.child.wait().expect("node exits");
+        let stdout = self.stdout_reader.join().expect("stdout reader exits");
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() {
+            pipe.read_to_string(&mut stderr).expect("read stderr");
+        }
+
+        CliNodeOutput {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+}
+
+fn spawn_node_and_wait_for_listening(args: &[&str]) -> (RunningCliNode, String) {
+    let mut child = Command::new(chesscoin_bin())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("node starts");
+    let stdout = child.stdout.take().expect("node stdout is piped");
+    let (addr_tx, addr_rx) = mpsc::channel();
+    let stdout_reader = thread::spawn(move || {
+        let mut captured = String::new();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.expect("read node stdout");
+            if let Some(addr) = line.strip_prefix("listening") {
+                let _ = addr_tx.send(addr.trim().to_string());
+            }
+            captured.push_str(&line);
+            captured.push('\n');
+        }
+        captured
+    });
+    let addr = match addr_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(addr) => addr,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("node did not report listening address: {error}");
+        }
+    };
+
+    (
+        RunningCliNode {
+            child,
+            stdout_reader,
+        },
+        addr,
+    )
 }

@@ -121,7 +121,9 @@ The current simulator intentionally uses a labeled toy 256-bit hash adapter. It 
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo build --release --locked -p chesscoin-cli
 ```
 
 The P2P tests bind localhost TCP sockets. Some restricted sandboxes block that; normal local shells and CI runners should allow it.
