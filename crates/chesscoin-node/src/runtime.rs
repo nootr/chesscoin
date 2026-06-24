@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -133,6 +133,7 @@ pub struct NodeSnapshot {
     pub oversized_messages: usize,
     pub outbound_blocks: usize,
     pub failed_broadcasts: usize,
+    pub failed_responses: usize,
     pub hello_announcements: usize,
     pub failed_hello_announcements: usize,
     pub dropped_inbound_connections: usize,
@@ -205,6 +206,7 @@ struct NodeState {
     oversized_messages: usize,
     outbound_blocks: usize,
     failed_broadcasts: usize,
+    failed_responses: usize,
     hello_announcements: usize,
     failed_hello_announcements: usize,
     dropped_inbound_connections: usize,
@@ -290,6 +292,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         oversized_messages: 0,
         outbound_blocks: 0,
         failed_broadcasts: 0,
+        failed_responses: 0,
         hello_announcements: 0,
         failed_hello_announcements: 0,
         dropped_inbound_connections: 0,
@@ -690,10 +693,15 @@ fn serve_inventory(
     };
 
     let _ = stream.set_write_timeout(Some(network.write_timeout));
-    let line = encode_network_message(&network.wire, &PeerMessage::Inventory { hashes }) + "\n";
-    let _ = stream
-        .write_all(line.as_bytes())
-        .and_then(|_| stream.flush());
+    record_response_result(
+        state,
+        write_peer_message(
+            &mut stream,
+            &network.wire,
+            &PeerMessage::Inventory { hashes },
+        )
+        .and_then(|_| stream.flush()),
+    );
 }
 
 fn serve_headers(
@@ -712,10 +720,15 @@ fn serve_headers(
     };
 
     let _ = stream.set_write_timeout(Some(network.write_timeout));
-    let line = encode_network_message(&network.wire, &PeerMessage::Headers { headers }) + "\n";
-    let _ = stream
-        .write_all(line.as_bytes())
-        .and_then(|_| stream.flush());
+    record_response_result(
+        state,
+        write_peer_message(
+            &mut stream,
+            &network.wire,
+            &PeerMessage::Headers { headers },
+        )
+        .and_then(|_| stream.flush()),
+    );
 }
 
 fn serve_peers(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>, requested_limit: usize) {
@@ -726,10 +739,11 @@ fn serve_peers(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>, requested_l
     };
 
     let _ = stream.set_write_timeout(Some(network.write_timeout));
-    let line = encode_network_message(&network.wire, &PeerMessage::Peers { peers }) + "\n";
-    let _ = stream
-        .write_all(line.as_bytes())
-        .and_then(|_| stream.flush());
+    record_response_result(
+        state,
+        write_peer_message(&mut stream, &network.wire, &PeerMessage::Peers { peers })
+            .and_then(|_| stream.flush()),
+    );
 }
 
 fn peer_advertisement(guard: &NodeState, limit: usize) -> Vec<SocketAddr> {
@@ -767,17 +781,22 @@ fn serve_blocks(
     };
 
     let _ = stream.set_write_timeout(Some(network.write_timeout));
+    let mut result = Ok(());
     for block in blocks {
-        let line =
-            encode_network_message(&network.wire, &PeerMessage::Block(Box::new(block))) + "\n";
-        if stream.write_all(line.as_bytes()).is_err() {
-            return;
+        result = write_peer_message(
+            &mut stream,
+            &network.wire,
+            &PeerMessage::Block(Box::new(block)),
+        );
+        if result.is_err() {
+            break;
         }
     }
-    let _ = stream.write_all(
-        (encode_network_message(&network.wire, &PeerMessage::EndBlocks) + "\n").as_bytes(),
-    );
-    let _ = stream.flush();
+    if result.is_ok() {
+        result = write_peer_message(&mut stream, &network.wire, &PeerMessage::EndBlocks)
+            .and_then(|_| stream.flush());
+    }
+    record_response_result(state, result);
 }
 
 fn serve_blocks_by_locator(
@@ -796,17 +815,41 @@ fn serve_blocks_by_locator(
     };
 
     let _ = stream.set_write_timeout(Some(network.write_timeout));
+    let mut result = Ok(());
     for block in blocks {
-        let line =
-            encode_network_message(&network.wire, &PeerMessage::Block(Box::new(block))) + "\n";
-        if stream.write_all(line.as_bytes()).is_err() {
-            return;
+        result = write_peer_message(
+            &mut stream,
+            &network.wire,
+            &PeerMessage::Block(Box::new(block)),
+        );
+        if result.is_err() {
+            break;
         }
     }
-    let _ = stream.write_all(
-        (encode_network_message(&network.wire, &PeerMessage::EndBlocks) + "\n").as_bytes(),
-    );
-    let _ = stream.flush();
+    if result.is_ok() {
+        result = write_peer_message(&mut stream, &network.wire, &PeerMessage::EndBlocks)
+            .and_then(|_| stream.flush());
+    }
+    record_response_result(state, result);
+}
+
+fn write_peer_message<W: Write>(
+    writer: &mut W,
+    wire: &WireConfig,
+    message: &PeerMessage,
+) -> io::Result<()> {
+    let line = encode_network_message(wire, message) + "\n";
+    writer.write_all(line.as_bytes())
+}
+
+fn record_response_result(state: &Arc<Mutex<NodeState>>, result: io::Result<()>) -> bool {
+    if result.is_ok() {
+        return true;
+    }
+
+    let mut guard = state.lock().expect("node state lock poisoned");
+    guard.failed_responses += 1;
+    false
 }
 
 fn mine_once(state: &Arc<Mutex<NodeState>>, training_seed: u64, sampling_entropy: u64) {
@@ -1386,6 +1429,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         oversized_messages: guard.oversized_messages,
         outbound_blocks: guard.outbound_blocks,
         failed_broadcasts: guard.failed_broadcasts,
+        failed_responses: guard.failed_responses,
         hello_announcements: guard.hello_announcements,
         failed_hello_announcements: guard.failed_hello_announcements,
         dropped_inbound_connections: guard.dropped_inbound_connections,
@@ -1857,6 +1901,7 @@ mod tests {
             oversized_messages: 0,
             outbound_blocks: 0,
             failed_broadcasts: 0,
+            failed_responses: 0,
             hello_announcements: 0,
             failed_hello_announcements: 0,
             dropped_inbound_connections: 0,
@@ -1890,6 +1935,43 @@ mod tests {
         let branch_a2 = branch_a_chain.mine_next_block(&hasher, &sampler, 7, 8);
 
         vec![block0, branch_b1, branch_a1, branch_a2]
+    }
+
+    #[test]
+    fn failed_response_write_is_counted() {
+        let state = Arc::new(Mutex::new(test_state(small_chain_config(), None)));
+
+        assert!(!record_response_result(
+            &state,
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed peer"))
+        ));
+        assert!(record_response_result(&state, Ok(())));
+
+        assert_eq!(snapshot(&state).failed_responses, 1);
+    }
+
+    #[test]
+    fn peer_message_writer_reports_write_failures() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed peer"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = FailingWriter;
+        let result =
+            write_peer_message(&mut writer, &WireConfig::default(), &PeerMessage::EndBlocks);
+
+        assert_eq!(
+            result.expect_err("write fails").kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     #[test]

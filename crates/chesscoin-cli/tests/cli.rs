@@ -60,6 +60,7 @@ fn node_command_mines_one_block() {
     assert!(stdout.contains("ChessCoin node v0.1"));
     assert!(stdout.contains("final height         1"));
     assert!(stdout.contains("known blocks         1"));
+    assert!(stdout.contains("failed responses     0"));
 }
 
 #[test]

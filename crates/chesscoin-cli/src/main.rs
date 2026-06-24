@@ -150,7 +150,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} hellos={} failed_hellos={} dropped_inbound={} storage_failures={} peer_rejections={} peers={} head={}",
+                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} failed_responses={} hellos={} failed_hellos={} dropped_inbound={} storage_failures={} peer_rejections={} peers={} head={}",
                 snapshot.height,
                 snapshot.mined_blocks,
                 snapshot.known_blocks,
@@ -162,6 +162,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
                 snapshot.oversized_messages,
                 snapshot.outbound_blocks,
                 snapshot.failed_broadcasts,
+                snapshot.failed_responses,
                 snapshot.hello_announcements,
                 snapshot.failed_hello_announcements,
                 snapshot.dropped_inbound_connections,
@@ -188,6 +189,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("oversized messages   {}", snapshot.oversized_messages);
     println!("outbound blocks      {}", snapshot.outbound_blocks);
     println!("failed broadcasts    {}", snapshot.failed_broadcasts);
+    println!("failed responses     {}", snapshot.failed_responses);
     println!("hello announcements  {}", snapshot.hello_announcements);
     println!(
         "failed hellos        {}",
