@@ -54,6 +54,7 @@ pub struct StorageConfig {
 pub struct NetworkConfig {
     pub wire: WireConfig,
     pub max_message_bytes: usize,
+    pub max_peers: usize,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
 }
@@ -82,6 +83,7 @@ impl Default for NetworkConfig {
         Self {
             wire: WireConfig::default(),
             max_message_bytes: 1024 * 1024,
+            max_peers: 64,
             connect_timeout: Duration::from_millis(500),
             read_timeout: Duration::from_secs(5),
         }
@@ -120,6 +122,7 @@ pub struct NodeSnapshot {
     pub oversized_messages: usize,
     pub outbound_blocks: usize,
     pub failed_broadcasts: usize,
+    pub peer_rejections: usize,
     pub synced_blocks: usize,
     pub failed_syncs: usize,
     pub known_peers: Vec<SocketAddr>,
@@ -186,6 +189,7 @@ struct NodeState {
     oversized_messages: usize,
     outbound_blocks: usize,
     failed_broadcasts: usize,
+    peer_rejections: usize,
     synced_blocks: usize,
     failed_syncs: usize,
     storage_path: Option<PathBuf>,
@@ -218,12 +222,14 @@ pub fn start_node(config: NodeConfig) -> Result<RunningNode, String> {
         )
     };
     let initial_sync = config.sync.clone();
+    let (peers, peer_rejections) =
+        normalize_initial_peers(bound_addr, config.peers, config.network.max_peers);
     let state = Arc::new(Mutex::new(NodeState {
         node_id: config.node_id,
         bound_addr,
         chain,
         fork_choice,
-        peers: config.peers,
+        peers,
         accepted_blocks: 0,
         rejected_blocks: 0,
         mined_blocks: 0,
@@ -233,6 +239,7 @@ pub fn start_node(config: NodeConfig) -> Result<RunningNode, String> {
         oversized_messages: 0,
         outbound_blocks: 0,
         failed_broadcasts: 0,
+        peer_rejections,
         synced_blocks: 0,
         failed_syncs: 0,
         storage_path,
@@ -611,9 +618,40 @@ fn sync_from_peer(
 
 fn add_peer(state: &Arc<Mutex<NodeState>>, peer: SocketAddr) {
     let mut guard = state.lock().expect("node state lock poisoned");
-    if peer != guard.bound_addr && !guard.peers.contains(&peer) {
-        guard.peers.push(peer);
+    if !add_peer_to_state(&mut guard, peer) {
+        guard.peer_rejections += 1;
     }
+}
+
+fn normalize_initial_peers(
+    bound_addr: SocketAddr,
+    peers: Vec<SocketAddr>,
+    max_peers: usize,
+) -> (Vec<SocketAddr>, usize) {
+    let mut accepted = Vec::new();
+    let mut rejected = 0;
+
+    for peer in peers {
+        if peer == bound_addr || accepted.contains(&peer) || accepted.len() >= max_peers {
+            rejected += 1;
+        } else {
+            accepted.push(peer);
+        }
+    }
+
+    (accepted, rejected)
+}
+
+fn add_peer_to_state(guard: &mut NodeState, peer: SocketAddr) -> bool {
+    if peer == guard.bound_addr
+        || guard.peers.contains(&peer)
+        || guard.peers.len() >= guard.network.max_peers
+    {
+        return false;
+    }
+
+    guard.peers.push(peer);
+    true
 }
 
 fn broadcast_block(state: &Arc<Mutex<NodeState>>, block: &chesscoin_core::domain::Block) {
@@ -673,6 +711,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         oversized_messages: guard.oversized_messages,
         outbound_blocks: guard.outbound_blocks,
         failed_broadcasts: guard.failed_broadcasts,
+        peer_rejections: guard.peer_rejections,
         synced_blocks: guard.synced_blocks,
         failed_syncs: guard.failed_syncs,
         known_peers: guard.peers.clone(),
@@ -991,6 +1030,7 @@ mod tests {
             oversized_messages: 0,
             outbound_blocks: 0,
             failed_broadcasts: 0,
+            peer_rejections: 0,
             synced_blocks: 0,
             failed_syncs: 0,
             storage_path,
@@ -1018,6 +1058,55 @@ mod tests {
         let branch_a2 = branch_a_chain.mine_next_block(&hasher, &sampler, 7, 8);
 
         vec![block0, branch_b1, branch_a1, branch_a2]
+    }
+
+    #[test]
+    fn initial_peers_are_deduplicated_and_bounded() {
+        let bound = SocketAddr::from(([127, 0, 0, 1], 9333));
+        let peer_a = SocketAddr::from(([127, 0, 0, 1], 9334));
+        let peer_b = SocketAddr::from(([127, 0, 0, 1], 9335));
+        let peer_c = SocketAddr::from(([127, 0, 0, 1], 9336));
+
+        let (peers, rejected) =
+            normalize_initial_peers(bound, vec![bound, peer_a, peer_a, peer_b, peer_c], 2);
+
+        assert_eq!(peers, vec![peer_a, peer_b]);
+        assert_eq!(rejected, 3);
+    }
+
+    #[test]
+    fn add_peer_rejects_self_duplicates_and_capacity_overflow() {
+        let mut state = test_state(small_chain_config(), None);
+        state.network.max_peers = 1;
+        let peer_a = SocketAddr::from(([127, 0, 0, 1], 9334));
+        let peer_b = SocketAddr::from(([127, 0, 0, 1], 9335));
+
+        assert!(!add_peer_to_state(
+            &mut state,
+            SocketAddr::from(([127, 0, 0, 1], 0))
+        ));
+        assert_eq!(state.peers, Vec::<SocketAddr>::new());
+        assert!(add_peer_to_state(&mut state, peer_a));
+        assert!(!add_peer_to_state(&mut state, peer_a));
+        assert!(!add_peer_to_state(&mut state, peer_b));
+        assert_eq!(state.peers, vec![peer_a]);
+    }
+
+    #[test]
+    fn add_peer_command_path_counts_rejections() {
+        let mut raw_state = test_state(small_chain_config(), None);
+        raw_state.network.max_peers = 1;
+        let state = Arc::new(Mutex::new(raw_state));
+        let peer_a = SocketAddr::from(([127, 0, 0, 1], 9334));
+        let peer_b = SocketAddr::from(([127, 0, 0, 1], 9335));
+
+        add_peer(&state, peer_a);
+        add_peer(&state, peer_a);
+        add_peer(&state, peer_b);
+
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.peers, vec![peer_a]);
+        assert_eq!(guard.peer_rejections, 2);
     }
 
     #[test]

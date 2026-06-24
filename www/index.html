@@ -642,6 +642,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li><code>--mine-interval-ms N</code> controls continuous mining cadence.</li>
                 <li><code>--data-dir PATH</code> enables checksummed block-log persistence.</li>
                 <li><code>--max-message-bytes N</code> bounds inbound peer messages.</li>
+                <li><code>--max-peers N</code> caps the retained peer set.</li>
                 <li><code>--sync-locator-hashes N</code> bounds block-locator catch-up requests.</li>
               </ul>
             </div>
@@ -652,7 +653,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Model-state transition metadata.</li>
                 <li>Trace commitment root and commitment chain.</li>
                 <li>Sampled deterministic training transitions.</li>
-                <li>Best-branch tracking with known block and reorg counters plus block-locator catch-up.</li>
+                <li>Best-branch tracking with known block, reorg, and peer rejection counters plus block-locator catch-up.</li>
               </ul>
             </div>
             <div class="operator-card">

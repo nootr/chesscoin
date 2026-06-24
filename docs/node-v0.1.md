@@ -30,6 +30,7 @@ mine=true
 mine_interval_ms=5000
 difficulty=8
 max_message_bytes=1048576
+max_peers=64
 sync_interval_ms=5000
 sync_locator_hashes=32
 ```
@@ -61,6 +62,7 @@ Useful options:
 --difficulty N    Required leading zero bits for toy proof-of-work
 --max-message-bytes N
                   Reject inbound peer messages larger than N bytes
+--max-peers N    Maximum known peers retained by the node
 --connect-timeout-ms N
                   Outbound peer connect timeout
 --read-timeout-ms N
@@ -88,7 +90,7 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, and `reorgs`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. Peer catch-up uses a bounded best-chain block locator so a peer can resume after the first common block instead of trusting equal heights.
+Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `peer rejections` counts self, duplicate, and over-capacity peer additions. Peer catch-up uses a bounded best-chain block locator so a peer can resume after the first common block instead of trusting equal heights.
 
 When `--data-dir` is enabled, new records in `blocks.log` are versioned and checksummed. Older plain v0.1 block records still load. On restart, an incomplete final record is ignored as an interrupted append, while a completed corrupt record remains fatal and should be investigated before continuing the node.
 

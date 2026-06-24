@@ -116,8 +116,11 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("peers                {:?}", startup.known_peers);
     println!("height               {}", startup.height);
     println!(
-        "network              id={} protocol={} max_message_bytes={}",
-        request.network_id, request.protocol_version, request.network_max_message_bytes
+        "network              id={} protocol={} max_message_bytes={} max_peers={}",
+        request.network_id,
+        request.protocol_version,
+        request.network_max_message_bytes,
+        request.network_max_peers
     );
 
     if request.mine_once {
@@ -141,7 +144,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} head={}",
+                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} peer_rejections={} head={}",
                 snapshot.height,
                 snapshot.mined_blocks,
                 snapshot.known_blocks,
@@ -153,6 +156,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
                 snapshot.oversized_messages,
                 snapshot.outbound_blocks,
                 snapshot.failed_broadcasts,
+                snapshot.peer_rejections,
                 snapshot.head
             );
         }
@@ -173,6 +177,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("oversized messages   {}", snapshot.oversized_messages);
     println!("outbound blocks      {}", snapshot.outbound_blocks);
     println!("failed broadcasts    {}", snapshot.failed_broadcasts);
+    println!("peer rejections      {}", snapshot.peer_rejections);
     println!("head                 {}", snapshot.head);
 
     Ok(())
@@ -217,6 +222,7 @@ struct NodeRequest {
     mining_enabled: bool,
     mining_interval: Duration,
     network_max_message_bytes: usize,
+    network_max_peers: usize,
     network_id: String,
     protocol_version: u16,
     run_ms: u64,
@@ -243,6 +249,7 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
         mining_enabled: false,
         mining_interval: Duration::from_secs(5),
         network_max_message_bytes: network_defaults.max_message_bytes,
+        network_max_peers: network_defaults.max_peers,
         network_id: network_defaults.wire.network_id.clone(),
         protocol_version: network_defaults.wire.protocol_version,
         run_ms: 0,
@@ -298,6 +305,10 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
                 request.network_max_message_bytes =
                     parse_next(&args, &mut index, "--max-message-bytes")?;
                 request.config.network.max_message_bytes = request.network_max_message_bytes;
+            }
+            "--max-peers" => {
+                request.network_max_peers = parse_next(&args, &mut index, "--max-peers")?;
+                request.config.network.max_peers = request.network_max_peers;
             }
             "--network-id" => {
                 request.network_id = parse_next(&args, &mut index, "--network-id")?;
@@ -358,6 +369,9 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
 
     if request.config.chain.samples_per_block > request.config.chain.steps_per_block {
         return Err("--samples must be less than or equal to --steps".to_string());
+    }
+    if request.config.network.max_peers == 0 {
+        return Err("--max-peers must be greater than zero".to_string());
     }
     if request.config.sync.max_locator_hashes == 0 {
         return Err("--sync-locator-hashes must be greater than zero".to_string());
@@ -462,7 +476,7 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--sync-interval-ms N] [--sync-locator-hashes N]
+  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--sync-interval-ms N] [--sync-locator-hashes N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026

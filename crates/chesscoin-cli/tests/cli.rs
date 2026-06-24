@@ -210,7 +210,7 @@ fn node_command_reads_config_file() {
     ));
     std::fs::write(
         &config_path,
-        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\nsync_locator_hashes=16\n",
+        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\nmax_peers=8\nsync_locator_hashes=16\n",
     )
     .expect("write config");
 
@@ -225,8 +225,9 @@ fn node_command_reads_config_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
-        stdout
-            .contains("network              id=chesscoin-local protocol=1 max_message_bytes=4096"),
+        stdout.contains(
+            "network              id=chesscoin-local protocol=1 max_message_bytes=4096 max_peers=8",
+        ),
         "{stdout}"
     );
 }

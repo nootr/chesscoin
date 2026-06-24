@@ -63,6 +63,7 @@ data_dir=.chesscoin
 mine=true
 mine_interval_ms=5000
 max_message_bytes=1048576
+max_peers=64
 sync_interval_ms=5000
 sync_locator_hashes=32
 ```
@@ -79,7 +80,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine --mine-interval-m
 
 Use `--mine-once` when you want a single block for smoke tests instead of a continuous miner.
 
-Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers. Late peers request missing best-chain blocks with a bounded block-locator message instead of a height-only cursor. Peer traffic is wrapped with protocol version and network id checks, and inbound peer messages are bounded by configurable size and timeout limits.
+Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers. Late peers request missing best-chain blocks with a bounded block-locator message instead of a height-only cursor. Peer traffic is wrapped with protocol version and network id checks, inbound peer messages are bounded by configurable size and timeout limits, and the known-peer set is capped with rejected peer additions counted in node output.
 
 ## Local Simulator
 
