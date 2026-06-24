@@ -1128,7 +1128,7 @@ fn blocks_from_peer(
     ) + "\n";
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
     stream.flush().map_err(|_| ())?;
-    let mut received = 0;
+    let mut received = Vec::with_capacity(expected_hashes.len());
 
     loop {
         let line = match read_limited_line_from(&mut stream, network.max_message_bytes) {
@@ -1144,22 +1144,26 @@ fn blocks_from_peer(
 
         match decode_network_message(&line, &network.wire).map_err(|_| ())? {
             PeerMessage::Block(block) => {
-                let Some(expected_hash) = expected_hashes.get(received) else {
+                let Some(expected_hash) = expected_hashes.get(received.len()) else {
                     return Err(());
                 };
                 let block = *block;
                 if block_hash(&ToyHash, &block) != *expected_hash {
                     return Err(());
                 }
-                received += 1;
-                let mut guard = state.lock().expect("node state lock poisoned");
-                if apply_incoming_block(&mut guard, block, BlockSource::Sync)
-                    == BlockApplication::Rejected
-                {
-                    return Err(());
-                }
+                received.push(block);
             }
-            PeerMessage::EndBlocks if received == expected_hashes.len() => return Ok(()),
+            PeerMessage::EndBlocks if received.len() == expected_hashes.len() => {
+                let mut guard = state.lock().expect("node state lock poisoned");
+                for block in received {
+                    if apply_incoming_block(&mut guard, block, BlockSource::Sync)
+                        == BlockApplication::Rejected
+                    {
+                        return Err(());
+                    }
+                }
+                return Ok(());
+            }
             PeerMessage::EndBlocks => return Err(()),
             PeerMessage::Inventory { .. } => return Err(()),
             _ => return Err(()),
@@ -3135,7 +3139,43 @@ mod tests {
                 .expect("state lock")
                 .fork_choice
                 .known_block_count(),
-            1
+            0
+        );
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn missing_block_response_fails_before_mutating_fork_choice() {
+        let expected = block_id(&competing_branch_blocks()[0]);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept blocks request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            let response =
+                encode_network_message(&response_network.wire, &PeerMessage::EndBlocks) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let state = Arc::new(Mutex::new(test_state(small_chain_config(), None)));
+
+        assert_eq!(
+            blocks_from_peer(&state, peer, Vec::new(), &[expected], &network),
+            Err(())
+        );
+        assert_eq!(
+            state
+                .lock()
+                .expect("state lock")
+                .fork_choice
+                .known_block_count(),
+            0
         );
 
         handle.join().expect("fake peer exits");
