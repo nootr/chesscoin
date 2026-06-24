@@ -387,9 +387,15 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             serve_blocks(stream, state, from_height, limit);
         }
         Ok(PeerMessage::GetBlocksByLocator { locator, limit }) => {
+            if !locator_is_within_limit(state, locator.len()) {
+                return;
+            }
             serve_blocks_by_locator(stream, state, &locator, limit);
         }
         Ok(PeerMessage::GetInventory { locator, limit }) => {
+            if !locator_is_within_limit(state, locator.len()) {
+                return;
+            }
             serve_inventory(stream, state, &locator, limit);
         }
         Ok(PeerMessage::Block(block)) => {
@@ -421,6 +427,15 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             }
         }
     }
+}
+
+fn locator_is_within_limit(state: &Arc<Mutex<NodeState>>, locator_len: usize) -> bool {
+    let mut guard = state.lock().expect("node state lock poisoned");
+    if locator_len > guard.sync.max_locator_hashes {
+        guard.malformed_messages += 1;
+        return false;
+    }
+    true
 }
 
 fn serve_inventory(
@@ -658,7 +673,7 @@ fn inventory_from_peer(
     };
 
     match decode_network_message(&line, &network.wire).map_err(|_| ())? {
-        PeerMessage::Inventory { hashes } => Ok(hashes),
+        PeerMessage::Inventory { hashes } if hashes.len() <= limit => Ok(hashes),
         _ => Err(()),
     }
 }
@@ -1816,6 +1831,61 @@ mod tests {
         assert_eq!(snapshot.malformed_messages, 1);
 
         node.stop();
+    }
+
+    #[test]
+    fn locator_request_over_limit_is_counted_as_malformed() {
+        let mut config = NodeConfig::localhost_ephemeral("locator-limit");
+        config.sync.max_locator_hashes = 1;
+        let node = start_node(config).expect("node starts");
+        let network = {
+            let guard = node.state.lock().expect("node state lock");
+            guard.network.clone()
+        };
+        let request = encode_network_message(
+            &network.wire,
+            &PeerMessage::GetInventory {
+                locator: vec![Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32])],
+                limit: 8,
+            },
+        ) + "\n";
+        let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
+        stream.write_all(request.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+        drop(stream);
+
+        let snapshot = wait_for_malformed(&node, 1);
+
+        assert_eq!(snapshot.malformed_messages, 1);
+
+        node.stop();
+    }
+
+    #[test]
+    fn inventory_response_over_requested_limit_fails_sync() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept inventory request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            let response = encode_network_message(
+                &response_network.wire,
+                &PeerMessage::Inventory {
+                    hashes: vec![Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32])],
+                },
+            ) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+
+        assert_eq!(inventory_from_peer(peer, Vec::new(), 1, &network), Err(()));
+
+        handle.join().expect("fake peer exits");
     }
 
     #[test]

@@ -41,7 +41,7 @@ That separation is deliberate. Tests can exercise protocol behavior through fake
 8. Startup HELLO messages announce a node's listen address to configured peers so gossip can become bidirectional without manual peer entries on both sides.
 9. Peer messages and known peers are bounded by configured limits, with malformed, oversized, incompatible, and rejected peer additions counted in node snapshots.
 10. Peer messages carry an explicit protocol version, network id, and chain fingerprint, so incompatible networks or chain parameters are rejected before block handling.
-11. Late peers first request a bounded best-chain inventory after a block locator, then fetch and validate missing blocks through the normal fork-choice insertion path.
+11. Late peers first request a bounded best-chain inventory after a block locator, then fetch and validate missing blocks through the normal fork-choice insertion path. Oversized locators and inventory responses are rejected before block handling.
 
 ## Current Research Limits
 
