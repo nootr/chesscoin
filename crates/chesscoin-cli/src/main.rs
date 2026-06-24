@@ -350,6 +350,10 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
                 let millis = parse_next(&args, &mut index, "--read-timeout-ms")?;
                 request.config.network.read_timeout = Duration::from_millis(millis);
             }
+            "--write-timeout-ms" => {
+                let millis = parse_next(&args, &mut index, "--write-timeout-ms")?;
+                request.config.network.write_timeout = Duration::from_millis(millis);
+            }
             "--sync-interval-ms" => {
                 let millis = parse_next(&args, &mut index, "--sync-interval-ms")?;
                 request.config.sync.interval = Duration::from_millis(millis);
@@ -494,7 +498,7 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--sync-interval-ms N] [--sync-locator-hashes N]
+  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--connect-timeout-ms N] [--read-timeout-ms N] [--write-timeout-ms N] [--sync-interval-ms N] [--sync-locator-hashes N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026

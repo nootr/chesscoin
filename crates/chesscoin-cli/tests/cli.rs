@@ -88,6 +88,26 @@ fn node_command_rejects_unmineable_difficulty() {
 }
 
 #[test]
+fn node_command_rejects_zero_write_timeout() {
+    let output = Command::new(chesscoin_bin())
+        .args([
+            "node",
+            "--listen",
+            "127.0.0.1:0",
+            "--run-ms",
+            "200",
+            "--write-timeout-ms",
+            "0",
+        ])
+        .output()
+        .expect("node command runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("write_timeout"), "{stderr}");
+}
+
+#[test]
 fn two_cli_nodes_exchange_a_mined_block() {
     let _guard = multi_node_test_guard();
     let addr_a = reserve_local_addr();

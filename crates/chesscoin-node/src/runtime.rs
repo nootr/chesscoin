@@ -61,6 +61,7 @@ pub struct NetworkConfig {
     pub max_peers: usize,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
+    pub write_timeout: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +91,7 @@ impl Default for NetworkConfig {
             max_peers: 64,
             connect_timeout: Duration::from_millis(500),
             read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -337,6 +339,9 @@ pub fn validate_node_config(config: &NodeConfig) -> Result<(), String> {
     if config.network.read_timeout.is_zero() {
         return Err("read_timeout must be greater than zero".to_string());
     }
+    if config.network.write_timeout.is_zero() {
+        return Err("write_timeout must be greater than zero".to_string());
+    }
     if config.sync.enabled {
         if config.sync.interval.is_zero() {
             return Err("sync interval must be greater than zero".to_string());
@@ -560,7 +565,7 @@ fn serve_inventory(
         )
     };
 
-    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let _ = stream.set_write_timeout(Some(network.write_timeout));
     let line = encode_network_message(&network.wire, &PeerMessage::Inventory { hashes }) + "\n";
     let _ = stream
         .write_all(line.as_bytes())
@@ -582,7 +587,7 @@ fn serve_headers(
         )
     };
 
-    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let _ = stream.set_write_timeout(Some(network.write_timeout));
     let line = encode_network_message(&network.wire, &PeerMessage::Headers { headers }) + "\n";
     let _ = stream
         .write_all(line.as_bytes())
@@ -596,7 +601,7 @@ fn serve_peers(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>, requested_l
         (peer_advertisement(&guard, limit), guard.network.clone())
     };
 
-    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let _ = stream.set_write_timeout(Some(network.write_timeout));
     let line = encode_network_message(&network.wire, &PeerMessage::Peers { peers }) + "\n";
     let _ = stream
         .write_all(line.as_bytes())
@@ -637,7 +642,7 @@ fn serve_blocks(
         (blocks, guard.network.clone())
     };
 
-    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let _ = stream.set_write_timeout(Some(network.write_timeout));
     for block in blocks {
         let line =
             encode_network_message(&network.wire, &PeerMessage::Block(Box::new(block))) + "\n";
@@ -666,7 +671,7 @@ fn serve_blocks_by_locator(
         )
     };
 
-    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let _ = stream.set_write_timeout(Some(network.write_timeout));
     for block in blocks {
         let line =
             encode_network_message(&network.wire, &PeerMessage::Block(Box::new(block))) + "\n";
@@ -825,10 +830,7 @@ fn peers_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<Vec<SocketAddr>, ()> {
-    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
-    stream
-        .set_read_timeout(Some(network.read_timeout))
-        .map_err(|_| ())?;
+    let mut stream = connect_outbound(peer, network)?;
     let request = encode_network_message(&network.wire, &PeerMessage::GetPeers { limit }) + "\n";
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
     stream.flush().map_err(|_| ())?;
@@ -843,6 +845,17 @@ fn peers_from_peer(
         PeerMessage::Peers { peers } if peers.len() <= limit => Ok(peers),
         _ => Err(()),
     }
+}
+
+fn connect_outbound(peer: SocketAddr, network: &NetworkConfig) -> Result<TcpStream, ()> {
+    let stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
+    stream
+        .set_read_timeout(Some(network.read_timeout))
+        .map_err(|_| ())?;
+    stream
+        .set_write_timeout(Some(network.write_timeout))
+        .map_err(|_| ())?;
+    Ok(stream)
 }
 
 fn sync_from_peer(
@@ -928,10 +941,7 @@ fn headers_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<Vec<BlockHeader>, ()> {
-    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
-    stream
-        .set_read_timeout(Some(network.read_timeout))
-        .map_err(|_| ())?;
+    let mut stream = connect_outbound(peer, network)?;
     let request =
         encode_network_message(&network.wire, &PeerMessage::GetHeaders { locator, limit }) + "\n";
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
@@ -956,10 +966,7 @@ fn inventory_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<Vec<Digest>, ()> {
-    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
-    stream
-        .set_read_timeout(Some(network.read_timeout))
-        .map_err(|_| ())?;
+    let mut stream = connect_outbound(peer, network)?;
     let request =
         encode_network_message(&network.wire, &PeerMessage::GetInventory { locator, limit }) + "\n";
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
@@ -984,10 +991,7 @@ fn blocks_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<(), ()> {
-    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
-    stream
-        .set_read_timeout(Some(network.read_timeout))
-        .map_err(|_| ())?;
+    let mut stream = connect_outbound(peer, network)?;
     let request = encode_network_message(
         &network.wire,
         &PeerMessage::GetBlocksByLocator { locator, limit },
@@ -1093,16 +1097,16 @@ fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) {
 
     if let Ok(mut stream) = TcpStream::connect_timeout(&peer, network.connect_timeout) {
         let _ = stream
-            .set_write_timeout(Some(network.connect_timeout))
+            .set_write_timeout(Some(network.write_timeout))
             .and_then(|_| stream.write_all(line.as_bytes()))
             .and_then(|_| stream.flush());
     }
 }
 
 fn broadcast_block(state: &Arc<Mutex<NodeState>>, block: &chesscoin_core::domain::Block) {
-    let (peers, timeout) = {
+    let (peers, network) = {
         let guard = state.lock().expect("node state lock poisoned");
-        (guard.peers.clone(), guard.network.connect_timeout)
+        (guard.peers.clone(), guard.network.clone())
     };
     let message = {
         let guard = state.lock().expect("node state lock poisoned");
@@ -1115,10 +1119,11 @@ fn broadcast_block(state: &Arc<Mutex<NodeState>>, block: &chesscoin_core::domain
     let mut failed = 0;
 
     for peer in peers {
-        match TcpStream::connect_timeout(&peer, timeout) {
+        match TcpStream::connect_timeout(&peer, network.connect_timeout) {
             Ok(mut stream) => {
                 if stream
-                    .write_all(message.as_bytes())
+                    .set_write_timeout(Some(network.write_timeout))
+                    .and_then(|_| stream.write_all(message.as_bytes()))
                     .and_then(|_| stream.flush())
                     .is_ok()
                 {
@@ -1709,6 +1714,11 @@ mod tests {
         config.sync.max_blocks_per_response = 0;
         let error = start_node_error(config);
         assert!(error.contains("max_blocks_per_response"), "{error}");
+
+        let mut config = NodeConfig::localhost_ephemeral("bad-write-timeout");
+        config.network.write_timeout = Duration::ZERO;
+        let error = start_node_error(config);
+        assert!(error.contains("write_timeout"), "{error}");
     }
 
     #[test]
@@ -1727,6 +1737,34 @@ mod tests {
         assert_eq!(snapshot.mined_blocks, 0);
 
         node.stop();
+    }
+
+    #[test]
+    fn outbound_connections_apply_read_and_write_timeouts() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let handle = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept outbound connection");
+        });
+        let network = NetworkConfig {
+            read_timeout: Duration::from_millis(1234),
+            write_timeout: Duration::from_millis(2345),
+            ..NetworkConfig::default()
+        };
+
+        let stream = connect_outbound(peer, &network).expect("connect outbound");
+
+        assert_eq!(
+            stream.read_timeout().expect("read timeout"),
+            Some(network.read_timeout)
+        );
+        assert_eq!(
+            stream.write_timeout().expect("write timeout"),
+            Some(network.write_timeout)
+        );
+
+        drop(stream);
+        handle.join().expect("fake peer exits");
     }
 
     #[test]

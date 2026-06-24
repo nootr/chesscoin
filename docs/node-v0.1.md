@@ -32,6 +32,7 @@ difficulty=8
 max_message_bytes=1048576
 max_peers=64
 sync_interval_ms=5000
+write_timeout_ms=5000
 sync_locator_hashes=32
 ```
 
@@ -67,6 +68,8 @@ Useful options:
                   Outbound peer connect timeout
 --read-timeout-ms N
                   Inbound peer read timeout
+--write-timeout-ms N
+                  Outbound peer write timeout
 --sync-interval-ms N
                   Delay between peer catch-up requests
 --sync-max-blocks N
@@ -90,7 +93,7 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, timeouts must be non-zero, and `--max-message-bytes` must be at least 128.
+Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, connect/read/write timeouts must be non-zero, and `--max-message-bytes` must be at least 128.
 
 Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `peer rejections` counts self, duplicate, and over-capacity peer additions. Peer catch-up requests bounded peer lists, then bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Header responses must extend the requested locator with contiguous heights, configured sample counts, and sufficient toy proof-of-work before full blocks are requested. Inbound locator requests are capped by `--sync-locator-hashes`; peer, header, or inventory responses larger than the requested limits fail that sync attempt.
 
