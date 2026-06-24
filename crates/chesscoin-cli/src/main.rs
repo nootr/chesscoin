@@ -120,12 +120,13 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("peers                {:?}", startup.known_peers);
     println!("height               {}", startup.height);
     println!(
-        "network              id={} protocol={} chain={} max_message_bytes={} max_peers={}",
+        "network              id={} protocol={} chain={} max_message_bytes={} max_peers={} max_inbound_connections={}",
         request.network_id,
         request.protocol_version,
         request.chain_fingerprint,
         request.network_max_message_bytes,
-        request.network_max_peers
+        request.network_max_peers,
+        request.network_max_inbound_connections
     );
 
     if request.mine_once {
@@ -149,7 +150,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} storage_failures={} peer_rejections={} peers={} head={}",
+                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} dropped_inbound={} storage_failures={} peer_rejections={} peers={} head={}",
                 snapshot.height,
                 snapshot.mined_blocks,
                 snapshot.known_blocks,
@@ -161,6 +162,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
                 snapshot.oversized_messages,
                 snapshot.outbound_blocks,
                 snapshot.failed_broadcasts,
+                snapshot.dropped_inbound_connections,
                 snapshot.storage_failures,
                 snapshot.peer_rejections,
                 snapshot.known_peers.len(),
@@ -184,6 +186,10 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("oversized messages   {}", snapshot.oversized_messages);
     println!("outbound blocks      {}", snapshot.outbound_blocks);
     println!("failed broadcasts    {}", snapshot.failed_broadcasts);
+    println!(
+        "dropped inbound      {}",
+        snapshot.dropped_inbound_connections
+    );
     println!("storage failures     {}", snapshot.storage_failures);
     println!("peer rejections      {}", snapshot.peer_rejections);
     println!("known peers          {}", snapshot.known_peers.len());
@@ -246,6 +252,7 @@ struct NodeRequest {
     mining_interval: Duration,
     network_max_message_bytes: usize,
     network_max_peers: usize,
+    network_max_inbound_connections: usize,
     chain_fingerprint: String,
     network_id: String,
     protocol_version: u16,
@@ -275,6 +282,7 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
         mining_interval: Duration::from_secs(5),
         network_max_message_bytes: network_defaults.max_message_bytes,
         network_max_peers: network_defaults.max_peers,
+        network_max_inbound_connections: network_defaults.max_inbound_connections,
         chain_fingerprint: network_defaults.wire.chain_fingerprint.clone(),
         network_id: network_defaults.wire.network_id.clone(),
         protocol_version: network_defaults.wire.protocol_version,
@@ -339,6 +347,12 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
             "--max-peers" => {
                 request.network_max_peers = parse_next(&args, &mut index, "--max-peers")?;
                 request.config.network.max_peers = request.network_max_peers;
+            }
+            "--max-inbound-connections" => {
+                request.network_max_inbound_connections =
+                    parse_next(&args, &mut index, "--max-inbound-connections")?;
+                request.config.network.max_inbound_connections =
+                    request.network_max_inbound_connections;
             }
             "--network-id" => {
                 request.network_id = parse_next(&args, &mut index, "--network-id")?;
@@ -504,7 +518,7 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--config PATH] [--listen ADDR] [--advertise ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--connect-timeout-ms N] [--read-timeout-ms N] [--write-timeout-ms N] [--sync-interval-ms N] [--sync-locator-hashes N]
+  chesscoin node [--config PATH] [--listen ADDR] [--advertise ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--max-inbound-connections N] [--connect-timeout-ms N] [--read-timeout-ms N] [--write-timeout-ms N] [--sync-interval-ms N] [--sync-locator-hashes N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026

@@ -644,10 +644,11 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li><code>--data-dir PATH</code> enables checksummed block-log persistence.</li>
                 <li><code>--max-message-bytes N</code> bounds inbound peer messages.</li>
                 <li><code>--max-peers N</code> caps the retained peer set.</li>
+                <li><code>--max-inbound-connections N</code> caps concurrent inbound peer handlers.</li>
                 <li><code>--write-timeout-ms N</code> bounds outbound peer writes.</li>
                 <li><code>--sync-locator-hashes N</code> bounds block-locator catch-up requests.</li>
               </ul>
-              <p>Startup rejects empty network ids, zero training or verification counts, sample counts above the step count, unmineable toy difficulty above 256 bits, wildcard listeners without an advertised address, zero connect/read/write timeouts, and message limits below 128 bytes.</p>
+              <p>Startup rejects empty network ids, zero training or verification counts, sample counts above the step count, unmineable toy difficulty above 256 bits, wildcard listeners without an advertised address, zero connect/read/write timeouts, zero inbound handler caps, and message limits below 128 bytes.</p>
             </div>
             <div class="operator-card">
               <h3>Protocol Checks</h3>
@@ -665,6 +666,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Storage failure counters for failed block-log appends.</li>
                 <li>Bounded peer exchange from known peers.</li>
                 <li>Non-dialable peer address rejection.</li>
+                <li>Bounded inbound connection handling with dropped-connection counters.</li>
                 <li>Header response screening before full-block sync.</li>
                 <li>Best-branch tracking with known block, reorg, and peer rejection counters plus bounded header-first block-locator catch-up.</li>
               </ul>

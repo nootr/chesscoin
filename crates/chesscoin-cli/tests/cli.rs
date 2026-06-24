@@ -108,6 +108,26 @@ fn node_command_rejects_zero_write_timeout() {
 }
 
 #[test]
+fn node_command_rejects_zero_max_inbound_connections() {
+    let output = Command::new(chesscoin_bin())
+        .args([
+            "node",
+            "--listen",
+            "127.0.0.1:0",
+            "--run-ms",
+            "200",
+            "--max-inbound-connections",
+            "0",
+        ])
+        .output()
+        .expect("node command runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("max_inbound_connections"), "{stderr}");
+}
+
+#[test]
 fn node_command_requires_advertise_for_unspecified_listener() {
     let output = Command::new(chesscoin_bin())
         .args(["node", "--listen", "0.0.0.0:0", "--run-ms", "1"])
@@ -312,7 +332,7 @@ fn node_command_reads_config_file() {
     ));
     std::fs::write(
         &config_path,
-        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\nmax_peers=8\nsync_locator_hashes=16\n",
+        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\nmax_peers=8\nmax_inbound_connections=7\nsync_locator_hashes=16\n",
     )
     .expect("write config");
 
@@ -328,7 +348,7 @@ fn node_command_reads_config_file() {
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
         stdout.contains(
-            "network              id=chesscoin-local protocol=6 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
+            "network              id=chesscoin-local protocol=6 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8 max_inbound_connections=7",
         ),
         "{stdout}"
     );

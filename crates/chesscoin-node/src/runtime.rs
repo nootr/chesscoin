@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -60,6 +60,7 @@ pub struct NetworkConfig {
     pub wire: WireConfig,
     pub max_message_bytes: usize,
     pub max_peers: usize,
+    pub max_inbound_connections: usize,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
@@ -90,6 +91,7 @@ impl Default for NetworkConfig {
             wire: WireConfig::default(),
             max_message_bytes: 1024 * 1024,
             max_peers: 64,
+            max_inbound_connections: 64,
             connect_timeout: Duration::from_millis(500),
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
@@ -131,6 +133,7 @@ pub struct NodeSnapshot {
     pub oversized_messages: usize,
     pub outbound_blocks: usize,
     pub failed_broadcasts: usize,
+    pub dropped_inbound_connections: usize,
     pub peer_rejections: usize,
     pub synced_blocks: usize,
     pub failed_syncs: usize,
@@ -200,6 +203,7 @@ struct NodeState {
     oversized_messages: usize,
     outbound_blocks: usize,
     failed_broadcasts: usize,
+    dropped_inbound_connections: usize,
     peer_rejections: usize,
     synced_blocks: usize,
     failed_syncs: usize,
@@ -282,6 +286,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         oversized_messages: 0,
         outbound_blocks: 0,
         failed_broadcasts: 0,
+        dropped_inbound_connections: 0,
         peer_rejections,
         synced_blocks: 0,
         failed_syncs: 0,
@@ -294,12 +299,14 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
 
     let thread_state = Arc::clone(&state);
     let thread_stop = Arc::clone(&stop);
+    let active_inbound_connections = Arc::new(AtomicUsize::new(0));
     let initial_miner = config.miner.clone();
     let handle = thread::spawn(move || {
         node_loop(
             listener,
             thread_state,
             thread_stop,
+            active_inbound_connections,
             command_rx,
             initial_miner,
             initial_sync,
@@ -360,6 +367,9 @@ pub fn validate_node_config(config: &NodeConfig) -> Result<(), String> {
     if config.network.max_peers == 0 {
         return Err("max_peers must be greater than zero".to_string());
     }
+    if config.network.max_inbound_connections == 0 {
+        return Err("max_inbound_connections must be greater than zero".to_string());
+    }
     if config.network.connect_timeout.is_zero() {
         return Err("connect_timeout must be greater than zero".to_string());
     }
@@ -404,6 +414,7 @@ fn node_loop(
     listener: TcpListener,
     state: Arc<Mutex<NodeState>>,
     stop: Arc<AtomicBool>,
+    active_inbound_connections: Arc<AtomicUsize>,
     command_rx: mpsc::Receiver<NodeCommand>,
     initial_miner: Option<MinerConfig>,
     initial_sync: SyncConfig,
@@ -414,7 +425,7 @@ fn node_loop(
     let mut next_sync_at = Instant::now();
 
     while !stop.load(Ordering::SeqCst) {
-        accept_ready_connections(&listener, &state);
+        accept_ready_connections(&listener, &state, &active_inbound_connections);
 
         while let Ok(command) = command_rx.try_recv() {
             match command {
@@ -466,12 +477,63 @@ fn node_loop(
     }
 }
 
-fn accept_ready_connections(listener: &TcpListener, state: &Arc<Mutex<NodeState>>) {
+fn accept_ready_connections(
+    listener: &TcpListener,
+    state: &Arc<Mutex<NodeState>>,
+    active_inbound_connections: &Arc<AtomicUsize>,
+) {
     loop {
         match listener.accept() {
-            Ok((stream, _remote_addr)) => handle_stream(stream, state),
+            Ok((stream, _remote_addr)) => {
+                let max_inbound_connections = {
+                    let guard = state.lock().expect("node state lock poisoned");
+                    guard.network.max_inbound_connections
+                };
+                let Some(permit) = reserve_inbound_connection(
+                    Arc::clone(active_inbound_connections),
+                    max_inbound_connections,
+                ) else {
+                    let mut guard = state.lock().expect("node state lock poisoned");
+                    guard.dropped_inbound_connections += 1;
+                    continue;
+                };
+
+                let handler_state = Arc::clone(state);
+                thread::spawn(move || {
+                    let _permit = permit;
+                    handle_stream(stream, &handler_state);
+                });
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => break,
+        }
+    }
+}
+
+struct InboundConnectionPermit {
+    active_connections: Arc<AtomicUsize>,
+}
+
+impl Drop for InboundConnectionPermit {
+    fn drop(&mut self) {
+        self.active_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn reserve_inbound_connection(
+    active_connections: Arc<AtomicUsize>,
+    limit: usize,
+) -> Option<InboundConnectionPermit> {
+    loop {
+        let current = active_connections.load(Ordering::SeqCst);
+        if current >= limit {
+            return None;
+        }
+        if active_connections
+            .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Some(InboundConnectionPermit { active_connections });
         }
     }
 }
@@ -1217,6 +1279,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         oversized_messages: guard.oversized_messages,
         outbound_blocks: guard.outbound_blocks,
         failed_broadcasts: guard.failed_broadcasts,
+        dropped_inbound_connections: guard.dropped_inbound_connections,
         peer_rejections: guard.peer_rejections,
         synced_blocks: guard.synced_blocks,
         failed_syncs: guard.failed_syncs,
@@ -1638,6 +1701,17 @@ mod tests {
         node.snapshot()
     }
 
+    fn wait_for_dropped_inbound(node: &RunningNode, dropped_inbound: usize) -> NodeSnapshot {
+        for _ in 0..250 {
+            let snapshot = node.snapshot();
+            if snapshot.dropped_inbound_connections >= dropped_inbound {
+                return snapshot;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        node.snapshot()
+    }
+
     fn wait_for_known_peer(node: &RunningNode, peer: SocketAddr) -> NodeSnapshot {
         for _ in 0..250 {
             let snapshot = node.snapshot();
@@ -1674,6 +1748,7 @@ mod tests {
             oversized_messages: 0,
             outbound_blocks: 0,
             failed_broadcasts: 0,
+            dropped_inbound_connections: 0,
             peer_rejections: 0,
             synced_blocks: 0,
             failed_syncs: 0,
@@ -1811,6 +1886,11 @@ mod tests {
         let error = start_node_error(config);
         assert!(error.contains("max_message_bytes"), "{error}");
 
+        let mut config = NodeConfig::localhost_ephemeral("bad-inbound-limit");
+        config.network.max_inbound_connections = 0;
+        let error = start_node_error(config);
+        assert!(error.contains("max_inbound_connections"), "{error}");
+
         let mut config = NodeConfig::localhost_ephemeral("bad-sync-limit");
         config.sync.max_blocks_per_response = 0;
         let error = start_node_error(config);
@@ -1830,6 +1910,34 @@ mod tests {
         config.advertise_addr = Some(SocketAddr::from(([0, 0, 0, 0], 9333)));
         let error = start_node_error(config);
         assert!(error.contains("advertise_addr must be dialable"), "{error}");
+    }
+
+    #[test]
+    fn inbound_connection_limit_drops_excess_connections() {
+        let mut config = NodeConfig::localhost_ephemeral("inbound-limit");
+        config.chain = small_chain_config();
+        config.network.max_inbound_connections = 1;
+        config.network.read_timeout = Duration::from_secs(10);
+        let node = start_node(config).expect("node starts");
+
+        let mut held_streams = Vec::new();
+        let mut first = TcpStream::connect(node.bound_addr()).expect("first connect");
+        first.write_all(b"HOLD").expect("hold first connection");
+        held_streams.push(first);
+
+        let mut snapshot = node.snapshot();
+        for _ in 0..8 {
+            held_streams.push(TcpStream::connect(node.bound_addr()).expect("extra connect"));
+            snapshot = wait_for_dropped_inbound(&node, 1);
+            if snapshot.dropped_inbound_connections >= 1 {
+                break;
+            }
+        }
+
+        assert!(snapshot.dropped_inbound_connections >= 1);
+
+        drop(held_streams);
+        node.stop();
     }
 
     #[test]

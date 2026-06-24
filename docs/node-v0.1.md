@@ -32,6 +32,7 @@ mine_interval_ms=5000
 difficulty=8
 max_message_bytes=1048576
 max_peers=64
+max_inbound_connections=64
 sync_interval_ms=5000
 write_timeout_ms=5000
 sync_locator_hashes=32
@@ -66,6 +67,8 @@ Useful options:
 --max-message-bytes N
                   Reject inbound peer messages larger than N bytes
 --max-peers N    Maximum known peers retained by the node
+--max-inbound-connections N
+                  Maximum concurrent inbound peer handlers
 --connect-timeout-ms N
                   Outbound peer connect timeout
 --read-timeout-ms N
@@ -95,9 +98,9 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, connect/read/write timeouts must be non-zero, and `--max-message-bytes` must be at least 128. Nodes that bind to an unspecified IP such as `0.0.0.0` or `[::]` must set `--advertise` to the dialable address shared with peers.
+Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--max-inbound-connections`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, connect/read/write timeouts must be non-zero, and `--max-message-bytes` must be at least 128. Nodes that bind to an unspecified IP such as `0.0.0.0` or `[::]` must set `--advertise` to the dialable address shared with peers.
 
-Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `peer rejections` counts self, duplicate, over-capacity, and non-dialable peer additions. Peer addresses with port zero, unspecified IPs, multicast IPs, or IPv4 broadcast are not retained. Peer catch-up requests bounded peer lists, then bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Header responses must extend the requested locator with contiguous heights, configured sample counts, and sufficient toy proof-of-work before full blocks are requested. Inbound locator requests are capped by `--sync-locator-hashes`; peer, header, or inventory responses larger than the requested limits fail that sync attempt.
+Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, `dropped inbound`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `dropped inbound` counts accepted TCP connections refused because the node already has `--max-inbound-connections` active inbound handlers. `peer rejections` counts self, duplicate, over-capacity, and non-dialable peer additions. Peer addresses with port zero, unspecified IPs, multicast IPs, or IPv4 broadcast are not retained. Peer catch-up requests bounded peer lists, then bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Header responses must extend the requested locator with contiguous heights, configured sample counts, and sufficient toy proof-of-work before full blocks are requested. Inbound locator requests are capped by `--sync-locator-hashes`; peer, header, or inventory responses larger than the requested limits fail that sync attempt.
 
 The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks, HELLO announcements, peer-list requests, or sync requests are handled. HELLO announcements include the sender's advertised listen address so a configured peer can learn the caller for later gossip. During sync, nodes can also request a bounded list of known listen addresses from configured peers. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
 
