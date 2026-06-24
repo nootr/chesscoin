@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,12 +9,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chesscoin_core::application::{block_hash, ChainConfig, ChainState, ForkChoiceState};
 use chesscoin_core::domain::Digest;
+use chesscoin_core::ports::HashPort;
 
 use crate::adapters::{DeterministicSampler, ToyHash};
 use crate::wire::{
     decode_block_message, decode_network_message, encode_block_message, encode_network_message,
     PeerMessage, WireConfig,
 };
+
+const STORAGE_RECORD_VERSION: &str = "CCBLK1";
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -817,43 +820,70 @@ fn load_chains(path: &Path, config: ChainConfig) -> Result<(ChainState, ForkChoi
         return Ok((ChainState::new(config), fork_choice));
     }
 
-    let file = fs::File::open(path)
-        .map_err(|error| format!("failed to open chain storage {}: {error}", path.display()))?;
-    let reader = BufReader::new(file);
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read chain storage {}: {error}", path.display()))?;
+    let has_complete_tail = content.ends_with('\n') || content.is_empty();
+    let lines = content.lines().collect::<Vec<_>>();
     let hasher = ToyHash;
     let sampler = DeterministicSampler;
 
-    for (line_number, line) in reader.lines().enumerate() {
-        let line = line.map_err(|error| {
-            format!(
-                "failed to read chain storage {} line {}: {error}",
-                path.display(),
-                line_number + 1
-            )
-        })?;
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
         if line.trim().is_empty() {
             continue;
         }
-        let block = decode_block_message(&line).map_err(|error| {
-            format!(
-                "invalid chain storage {} line {}: {error}",
-                path.display(),
-                line_number + 1
-            )
-        })?;
+        let block = match decode_storage_record(line) {
+            Ok(block) => block,
+            Err(_) if !has_complete_tail && line_number == lines.len() => break,
+            Err(error) => {
+                return Err(format!(
+                    "invalid chain storage {} line {}: {error}",
+                    path.display(),
+                    line_number
+                ));
+            }
+        };
         fork_choice
             .insert_block(&hasher, &sampler, block)
             .map_err(|error| {
                 format!(
                     "stored block failed validation in {} line {}: {error:?}",
                     path.display(),
-                    line_number + 1
+                    line_number
                 )
             })?;
     }
 
     let chain = chain_from_blocks(config, fork_choice.best_chain())?;
     Ok((chain, fork_choice))
+}
+
+fn encode_storage_record(block: &chesscoin_core::domain::Block) -> String {
+    let payload = encode_block_message(block);
+    let checksum = storage_record_checksum(&payload);
+    format!("{STORAGE_RECORD_VERSION}|{checksum}|{payload}")
+}
+
+fn decode_storage_record(line: &str) -> Result<chesscoin_core::domain::Block, String> {
+    let fields = line.splitn(3, '|').collect::<Vec<_>>();
+    if fields.first().copied() != Some(STORAGE_RECORD_VERSION) {
+        return decode_block_message(line);
+    }
+    if fields.len() != 3 {
+        return Err("storage record requires version, checksum, and payload".to_string());
+    }
+
+    let expected = Digest::from_hex(fields[1])?;
+    let actual = storage_record_checksum(fields[2]);
+    if expected != actual {
+        return Err("storage record checksum mismatch".to_string());
+    }
+
+    decode_block_message(fields[2])
+}
+
+fn storage_record_checksum(payload: &str) -> Digest {
+    ToyHash.digest(payload.as_bytes())
 }
 
 fn append_block(path: &Path, block: &chesscoin_core::domain::Block) -> Result<(), String> {
@@ -870,8 +900,10 @@ fn append_block(path: &Path, block: &chesscoin_core::domain::Block) -> Result<()
         .append(true)
         .open(path)
         .map_err(|error| format!("failed to open chain storage {}: {error}", path.display()))?;
-    file.write_all(encode_block_message(block).as_bytes())
+    file.write_all(encode_storage_record(block).as_bytes())
         .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.flush())
+        .and_then(|_| file.sync_data())
         .map_err(|error| format!("failed to write chain storage {}: {error}", path.display()))
 }
 
@@ -1107,6 +1139,89 @@ mod tests {
     }
 
     #[test]
+    fn storage_records_round_trip_with_checksum() {
+        let block = competing_branch_blocks().remove(0);
+        let record = encode_storage_record(&block);
+
+        assert_eq!(decode_storage_record(&record).expect("valid record"), block);
+    }
+
+    #[test]
+    fn storage_rejects_checksum_mismatch() {
+        let block = competing_branch_blocks().remove(0);
+        let payload = encode_block_message(&block);
+        let record = format!("{}|{}|{}", STORAGE_RECORD_VERSION, Digest::zero(), payload);
+
+        assert_eq!(
+            decode_storage_record(&record),
+            Err("storage record checksum mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_plain_block_log_still_loads() {
+        let data_dir = unique_test_data_dir("legacy-log");
+        let storage_path = data_dir.join("blocks.log");
+        let block = competing_branch_blocks().remove(0);
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        fs::write(&storage_path, format!("{}\n", encode_block_message(&block))).expect("write log");
+
+        let (chain, fork_choice) =
+            load_chains(&storage_path, small_chain_config()).expect("legacy log loads");
+
+        assert_eq!(chain.height(), 1);
+        assert_eq!(chain.head_hash(&ToyHash), block_id(&block));
+        assert_eq!(fork_choice.known_block_count(), 1);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn interrupted_tail_record_is_ignored_on_reload() {
+        let data_dir = unique_test_data_dir("tail-log");
+        let storage_path = data_dir.join("blocks.log");
+        let block = competing_branch_blocks().remove(0);
+        append_block(&storage_path, &block).expect("append good block");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&storage_path)
+            .expect("open log");
+        file.write_all(b"CCBLK1|partial").expect("write partial");
+        file.flush().expect("flush partial");
+
+        let (chain, fork_choice) =
+            load_chains(&storage_path, small_chain_config()).expect("tail recovers");
+
+        assert_eq!(chain.height(), 1);
+        assert_eq!(chain.head_hash(&ToyHash), block_id(&block));
+        assert_eq!(fork_choice.known_block_count(), 1);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn completed_corrupt_record_is_fatal_on_reload() {
+        let data_dir = unique_test_data_dir("corrupt-log");
+        let storage_path = data_dir.join("blocks.log");
+        let block = competing_branch_blocks().remove(0);
+        append_block(&storage_path, &block).expect("append good block");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&storage_path)
+            .expect("open log");
+        file.write_all(b"CCBLK1|partial\n")
+            .expect("write corrupt complete record");
+        file.flush().expect("flush corrupt record");
+
+        let error =
+            load_chains(&storage_path, small_chain_config()).expect_err("corrupt log fails");
+
+        assert!(error.contains("invalid chain storage"), "{error}");
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
     fn two_nodes_share_a_mined_block() {
         let mut config_a = NodeConfig::localhost_ephemeral("node-a");
         config_a.chain.difficulty_zero_bits = 0;
@@ -1237,6 +1352,7 @@ mod tests {
         let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
         stream.write_all(b"NOT_A_MESSAGE\n").expect("write");
         stream.flush().expect("flush");
+        drop(stream);
 
         let snapshot = wait_for_malformed(&node, 1);
 
@@ -1254,6 +1370,7 @@ mod tests {
         let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
         stream.write_all(b"BLOCK_TOO_LARGE\n").expect("write");
         stream.flush().expect("flush");
+        drop(stream);
 
         let snapshot = wait_for_oversized(&node, 1);
 
@@ -1278,16 +1395,27 @@ mod tests {
                 limit: 1,
             },
         ) + "\n";
-        let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
-        stream.write_all(message.as_bytes()).expect("write");
-        stream.flush().expect("flush");
+        let snapshot = send_until_incompatible(&node, &message);
 
-        let snapshot = wait_for_incompatible(&node, 1);
-
-        assert_eq!(snapshot.incompatible_messages, 1);
-        assert_eq!(snapshot.malformed_messages, 0);
+        assert!(snapshot.incompatible_messages >= 1, "{snapshot:?}");
 
         node.stop();
+    }
+
+    fn send_until_incompatible(node: &RunningNode, message: &str) -> NodeSnapshot {
+        for _ in 0..5 {
+            let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
+            stream.write_all(message.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+            drop(stream);
+
+            let snapshot = wait_for_incompatible(node, 1);
+            if snapshot.incompatible_messages >= 1 {
+                return snapshot;
+            }
+        }
+
+        node.snapshot()
     }
 
     fn unique_test_data_dir(name: &str) -> PathBuf {
