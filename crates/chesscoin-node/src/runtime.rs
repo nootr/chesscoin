@@ -921,9 +921,8 @@ fn apply_incoming_block(
             BlockApplication::Accepted
         }
         Err(_) => {
-            match source {
-                BlockSource::Gossip => guard.rejected_blocks += 1,
-                BlockSource::Sync => guard.failed_syncs += 1,
+            if matches!(source, BlockSource::Gossip) {
+                guard.rejected_blocks += 1;
             }
             BlockApplication::Rejected
         }
@@ -1218,7 +1217,6 @@ fn blocks_from_peer(
             PeerMessage::EndBlocks if received.len() == expected_hashes.len() => {
                 let mut guard = state.lock().expect("node state lock poisoned");
                 if validate_sync_batch(&guard, &received).is_err() {
-                    guard.failed_syncs += 1;
                     return Err(());
                 }
                 for block in received {
@@ -3249,6 +3247,83 @@ mod tests {
             blocks_from_peer(&state, peer, Vec::new(), &expected, &network),
             Err(())
         );
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.fork_choice.known_block_count(), 0);
+        assert_eq!(guard.synced_blocks, 0);
+        assert_eq!(guard.failed_syncs, 0);
+        drop(guard);
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn sync_once_counts_invalid_block_batch_once() {
+        let blocks = competing_branch_blocks();
+        let first = blocks[0].clone();
+        let valid_second = blocks[2].clone();
+        let mut invalid_second = valid_second.clone();
+        invalid_second.trace.entries[1].step.gradient = invalid_second.trace.entries[1]
+            .step
+            .gradient
+            .saturating_add(1);
+        assert_eq!(block_id(&invalid_second), block_id(&valid_second));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept peers request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read peers request");
+            let response = encode_network_message(
+                &response_network.wire,
+                &PeerMessage::Peers { peers: vec![] },
+            ) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write peers response");
+            stream.flush().expect("flush peers response");
+
+            let (mut stream, _) = listener.accept().expect("accept headers request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read headers request");
+            let response = encode_network_message(
+                &response_network.wire,
+                &PeerMessage::Headers {
+                    headers: vec![first.header.clone(), valid_second.header],
+                },
+            ) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write headers response");
+            stream.flush().expect("flush headers response");
+
+            let (mut stream, _) = listener.accept().expect("accept blocks request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read blocks request");
+            for block in [first, invalid_second] {
+                let response = encode_network_message(
+                    &response_network.wire,
+                    &PeerMessage::Block(Box::new(block)),
+                ) + "\n";
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write block response");
+            }
+            let response =
+                encode_network_message(&response_network.wire, &PeerMessage::EndBlocks) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write end response");
+            stream.flush().expect("flush end response");
+        });
+        let mut node_state = test_state(small_chain_config(), None);
+        node_state.peers.push(peer);
+        let state = Arc::new(Mutex::new(node_state));
+
+        sync_once(&state);
+
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.fork_choice.known_block_count(), 0);
         assert_eq!(guard.synced_blocks, 0);
