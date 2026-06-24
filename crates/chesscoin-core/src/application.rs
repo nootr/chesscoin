@@ -202,6 +202,10 @@ pub enum BlockValidationError {
         expected: usize,
         actual: usize,
     },
+    WrongSampleCount {
+        expected: usize,
+        actual: usize,
+    },
     WrongTraceRoot,
     InvalidSample {
         index: usize,
@@ -393,6 +397,13 @@ where
         return Err(BlockValidationError::WrongTraceLength {
             expected: config.steps_per_block,
             actual: block.trace.entries.len(),
+        });
+    }
+
+    if block.header.sample_count != config.samples_per_block {
+        return Err(BlockValidationError::WrongSampleCount {
+            expected: config.samples_per_block,
+            actual: block.header.sample_count,
         });
     }
 
@@ -844,6 +855,27 @@ mod tests {
             Err(BlockValidationError::WrongTraceLength {
                 expected: 4,
                 actual: 3
+            })
+        );
+    }
+
+    #[test]
+    fn block_with_wrong_sample_count_rejects() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        });
+        let mut block = chain.mine_next_block(&hasher, &sampler, 11, 22);
+        block.header.sample_count = 0;
+
+        assert_eq!(
+            chain.validate_next_block(&hasher, &sampler, &block),
+            Err(BlockValidationError::WrongSampleCount {
+                expected: 4,
+                actual: 0
             })
         );
     }

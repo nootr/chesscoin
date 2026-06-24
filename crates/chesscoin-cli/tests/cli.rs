@@ -57,7 +57,7 @@ fn two_cli_nodes_exchange_a_mined_block() {
             "--listen",
             &addr_a,
             "--run-ms",
-            "1500",
+            "2500",
             "--difficulty",
             "0",
             "--steps",
@@ -80,7 +80,7 @@ fn two_cli_nodes_exchange_a_mined_block() {
             &addr_a,
             "--mine-once",
             "--run-ms",
-            "400",
+            "800",
             "--difficulty",
             "0",
             "--steps",
@@ -92,6 +92,9 @@ fn two_cli_nodes_exchange_a_mined_block() {
         .expect("node b runs");
 
     assert!(output_b.status.success());
+    let stdout_b = String::from_utf8_lossy(&output_b.stdout);
+    assert!(stdout_b.contains("final height         1"), "{stdout_b}");
+    assert!(stdout_b.contains("mined blocks         1"), "{stdout_b}");
 
     let output_a = node_a.wait_with_output().expect("node a exits");
     assert!(output_a.status.success());

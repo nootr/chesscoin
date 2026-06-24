@@ -94,6 +94,8 @@ Node output includes the active `height` and `head`, plus counters for `mined bl
 
 The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks or sync requests are handled. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
 
+Incoming blocks must declare the configured `--samples` count. A block cannot lower its own sampled verification count in the header.
+
 When `--data-dir` is enabled, new records in `blocks.log` are versioned and checksummed. Older plain v0.1 block records still load. On restart, an incomplete final record is ignored as an interrupted append, while a completed corrupt record remains fatal and should be investigated before continuing the node.
 
 ## Verification
