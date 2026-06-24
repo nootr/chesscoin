@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chesscoin_core::application::{
     block_hash, block_header_hash, ChainConfig, ChainState, ForkChoiceState,
 };
-use chesscoin_core::domain::{BlockHeader, Digest};
+use chesscoin_core::domain::{Block, BlockHeader, Digest};
 use chesscoin_core::ports::HashPort;
 
 use crate::adapters::{DeterministicSampler, ToyHash};
@@ -847,7 +847,7 @@ enum BlockApplication {
 
 fn apply_incoming_block(
     guard: &mut NodeState,
-    block: chesscoin_core::domain::Block,
+    block: Block,
     source: BlockSource,
 ) -> BlockApplication {
     let hasher = ToyHash;
@@ -887,7 +887,26 @@ fn apply_incoming_block(
     }
 }
 
-fn persist_block(guard: &mut NodeState, block: &chesscoin_core::domain::Block) {
+fn validate_sync_batch(guard: &NodeState, blocks: &[Block]) -> Result<(), ()> {
+    let hasher = ToyHash;
+    let sampler = DeterministicSampler;
+    let mut fork_choice = guard.fork_choice.clone();
+
+    for block in blocks {
+        let hash = block_hash(&hasher, block);
+        if fork_choice.contains_block(hash) {
+            continue;
+        }
+        fork_choice
+            .insert_block(&hasher, &sampler, block.clone())
+            .map_err(|_| ())?;
+    }
+
+    chain_from_blocks(fork_choice.config().clone(), fork_choice.best_chain()).map_err(|_| ())?;
+    Ok(())
+}
+
+fn persist_block(guard: &mut NodeState, block: &Block) {
     let Some(path) = guard.storage_path.clone() else {
         return;
     };
@@ -1155,6 +1174,10 @@ fn blocks_from_peer(
             }
             PeerMessage::EndBlocks if received.len() == expected_hashes.len() => {
                 let mut guard = state.lock().expect("node state lock poisoned");
+                if validate_sync_batch(&guard, &received).is_err() {
+                    guard.failed_syncs += 1;
+                    return Err(());
+                }
                 for block in received {
                     if apply_incoming_block(&mut guard, block, BlockSource::Sync)
                         == BlockApplication::Rejected
@@ -3098,6 +3121,57 @@ mod tests {
                 .known_block_count(),
             0
         );
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn invalid_later_sync_block_does_not_partially_mutate_fork_choice() {
+        let blocks = competing_branch_blocks();
+        let first = blocks[0].clone();
+        let mut invalid_second = blocks[2].clone();
+        invalid_second.trace.entries[1].step.gradient = invalid_second.trace.entries[1]
+            .step
+            .gradient
+            .saturating_add(1);
+        let expected = [block_id(&first), block_id(&blocks[2])];
+        assert_eq!(block_id(&invalid_second), expected[1]);
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept blocks request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            for block in [first, invalid_second] {
+                let response = encode_network_message(
+                    &response_network.wire,
+                    &PeerMessage::Block(Box::new(block)),
+                ) + "\n";
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+            }
+            let response =
+                encode_network_message(&response_network.wire, &PeerMessage::EndBlocks) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write end response");
+            stream.flush().expect("flush response");
+        });
+        let state = Arc::new(Mutex::new(test_state(small_chain_config(), None)));
+
+        assert_eq!(
+            blocks_from_peer(&state, peer, Vec::new(), &expected, &network),
+            Err(())
+        );
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.fork_choice.known_block_count(), 0);
+        assert_eq!(guard.synced_blocks, 0);
+        assert_eq!(guard.failed_syncs, 1);
+        drop(guard);
 
         handle.join().expect("fake peer exits");
     }
