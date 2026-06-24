@@ -586,10 +586,10 @@
           <div class="mvp-grid">
             <div>
               <h2>Rust Node v0.1</h2>
-              <p>ChessCoin now has a working local MVP node. It can mine toy proof-of-work blocks, attach deterministic chess training traces, validate sampled transitions, accept or reject incoming blocks, and gossip accepted blocks to TCP peers.</p>
+              <p>ChessCoin now has a working local MVP node. It can mine toy proof-of-work blocks, attach deterministic chess training traces, validate sampled transitions, track valid branches with fork choice, and gossip accepted blocks to TCP peers.</p>
               <ul class="mvp-list">
                 <li>Strict hexagonal architecture: protocol core is isolated from TCP, wire encoding, and CLI delivery.</li>
-                <li>Domain tests cover deterministic traces, commitment binding, block validation, and rejection cases.</li>
+                <li>Domain tests cover deterministic traces, commitment binding, block validation, fork choice, and rejection cases.</li>
                 <li>End-to-end tests cover two local nodes sharing a mined block over TCP.</li>
               </ul>
             </div>
@@ -650,12 +650,13 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Model-state transition metadata.</li>
                 <li>Trace commitment root and commitment chain.</li>
                 <li>Sampled deterministic training transitions.</li>
+                <li>Best-branch tracking with known block and reorg counters.</li>
               </ul>
             </div>
             <div class="operator-card">
               <h3>Research Limits</h3>
               <ul>
-                <li>No wallet, token, robust database, or fork-aware chain sync yet.</li>
+                <li>No wallet, token, robust database, or fork-aware historical sync yet.</li>
                 <li>RandomX is not integrated in v0.1.</li>
                 <li>The current hash and PoW are toy adapters.</li>
                 <li>Use isolated test networks only.</li>

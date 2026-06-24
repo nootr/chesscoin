@@ -66,7 +66,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine --mine-interval-m
 
 Use `--mine-once` when you want a single block for smoke tests instead of a continuous miner.
 
-Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Accepted blocks are applied locally, persisted when `--data-dir` is set, and gossiped to known peers. Late peers can request missing blocks by height. Peer traffic is wrapped with protocol version and network id checks, and inbound peer messages are bounded by configurable size and timeout limits.
+Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted when `--data-dir` is set and gossiped to known peers. Late peers can request missing blocks by height. Peer traffic is wrapped with protocol version and network id checks, and inbound peer messages are bounded by configurable size and timeout limits.
 
 ## Local Simulator
 
@@ -112,7 +112,7 @@ The P2P tests bind localhost TCP sockets. Some restricted sandboxes block that; 
 
 - Refine the public whitepaper.
 - Replace block-log persistence with a robust database and recovery model.
-- Add peer discovery, fork choice, historical reconciliation, and better gossip controls.
+- Add peer discovery, fork-aware historical reconciliation, and better gossip controls.
 - Replace the toy proof-of-work/hash adapter with RandomX-oriented integration.
 - Add richer trace-opening data and verifier protocol notes.
 - Decide later whether to integrate with or fork an existing RandomX-based chain.

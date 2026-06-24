@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chesscoin_core::application::{block_hash, ChainConfig, ChainState};
+use chesscoin_core::application::{block_hash, ChainConfig, ChainState, ForkChoiceState};
 use chesscoin_core::domain::Digest;
 
 use crate::adapters::{DeterministicSampler, ToyHash};
@@ -108,6 +108,8 @@ pub struct NodeSnapshot {
     pub accepted_blocks: usize,
     pub rejected_blocks: usize,
     pub mined_blocks: usize,
+    pub known_blocks: usize,
+    pub reorgs: usize,
     pub malformed_messages: usize,
     pub incompatible_messages: usize,
     pub oversized_messages: usize,
@@ -168,10 +170,12 @@ struct NodeState {
     node_id: String,
     bound_addr: SocketAddr,
     chain: ChainState,
+    fork_choice: ForkChoiceState,
     peers: Vec<SocketAddr>,
     accepted_blocks: usize,
     rejected_blocks: usize,
     mined_blocks: usize,
+    reorgs: usize,
     malformed_messages: usize,
     incompatible_messages: usize,
     oversized_messages: usize,
@@ -200,20 +204,25 @@ pub fn start_node(config: NodeConfig) -> Result<RunningNode, String> {
         .storage
         .as_ref()
         .map(|storage| storage.data_dir.join("blocks.log"));
-    let chain = if let Some(path) = storage_path.as_deref() {
-        load_chain(path, config.chain.clone())?
+    let (chain, fork_choice) = if let Some(path) = storage_path.as_deref() {
+        load_chains(path, config.chain.clone())?
     } else {
-        ChainState::new(config.chain)
+        (
+            ChainState::new(config.chain.clone()),
+            ForkChoiceState::new(config.chain.clone()),
+        )
     };
     let initial_sync = config.sync.clone();
     let state = Arc::new(Mutex::new(NodeState {
         node_id: config.node_id,
         bound_addr,
         chain,
+        fork_choice,
         peers: config.peers,
         accepted_blocks: 0,
         rejected_blocks: 0,
         mined_blocks: 0,
+        reorgs: 0,
         malformed_messages: 0,
         incompatible_messages: 0,
         oversized_messages: 0,
@@ -354,12 +363,12 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
         }
         Ok(PeerMessage::Block(block)) => {
             let block = *block;
-            let accepted = {
+            let application = {
                 let mut guard = state.lock().expect("node state lock poisoned");
                 apply_incoming_block(&mut guard, block.clone(), BlockSource::Gossip)
             };
 
-            if accepted {
+            if application == BlockApplication::Accepted {
                 broadcast_block(state, &block);
             }
         }
@@ -419,13 +428,15 @@ fn mine_once(state: &Arc<Mutex<NodeState>>, training_seed: u64, sampling_entropy
         let mut guard = state.lock().expect("node state lock poisoned");
         let hasher = ToyHash;
         let sampler = DeterministicSampler;
-        let block = guard
-            .chain
-            .mine_next_block(&hasher, &sampler, training_seed, sampling_entropy);
+        let block =
+            guard
+                .fork_choice
+                .mine_next_block(&hasher, &sampler, training_seed, sampling_entropy);
         guard
-            .chain
-            .apply_block(&hasher, &sampler, block.clone())
+            .fork_choice
+            .insert_block(&hasher, &sampler, block.clone())
             .expect("locally mined block should validate");
+        activate_best_chain(&mut guard).expect("locally mined chain should activate");
         if let Some(path) = guard.storage_path.as_deref() {
             append_block(path, &block).expect("persist locally mined block");
         }
@@ -442,30 +453,53 @@ enum BlockSource {
     Sync,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockApplication {
+    Accepted,
+    AlreadyKnown,
+    Rejected,
+}
+
 fn apply_incoming_block(
     guard: &mut NodeState,
     block: chesscoin_core::domain::Block,
     source: BlockSource,
-) -> bool {
+) -> BlockApplication {
     let hasher = ToyHash;
     let sampler = DeterministicSampler;
-    match guard.chain.apply_block(&hasher, &sampler, block.clone()) {
+    let hash = block_hash(&hasher, &block);
+    if guard.fork_choice.contains_block(hash) {
+        return BlockApplication::AlreadyKnown;
+    }
+
+    let old_head = guard.chain.head_hash(&hasher);
+    match guard
+        .fork_choice
+        .insert_block(&hasher, &sampler, block.clone())
+    {
         Ok(_) => {
             if let Some(path) = guard.storage_path.as_deref() {
                 let _ = append_block(path, &block);
+            }
+            if activate_best_chain(guard).is_ok()
+                && old_head != Digest::zero()
+                && block.header.previous_block != old_head
+                && guard.chain.head_hash(&hasher) == hash
+            {
+                guard.reorgs += 1;
             }
             match source {
                 BlockSource::Gossip => guard.accepted_blocks += 1,
                 BlockSource::Sync => guard.synced_blocks += 1,
             }
-            true
+            BlockApplication::Accepted
         }
         Err(_) => {
             match source {
                 BlockSource::Gossip => guard.rejected_blocks += 1,
                 BlockSource::Sync => guard.failed_syncs += 1,
             }
-            false
+            BlockApplication::Rejected
         }
     }
 }
@@ -526,7 +560,9 @@ fn sync_from_peer(
         match decode_network_message(&line, &network.wire).map_err(|_| ())? {
             PeerMessage::Block(block) => {
                 let mut guard = state.lock().expect("node state lock poisoned");
-                if !apply_incoming_block(&mut guard, *block, BlockSource::Sync) {
+                if apply_incoming_block(&mut guard, *block, BlockSource::Sync)
+                    == BlockApplication::Rejected
+                {
                     return Err(());
                 }
             }
@@ -593,6 +629,8 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         accepted_blocks: guard.accepted_blocks,
         rejected_blocks: guard.rejected_blocks,
         mined_blocks: guard.mined_blocks,
+        known_blocks: guard.fork_choice.known_block_count(),
+        reorgs: guard.reorgs,
         malformed_messages: guard.malformed_messages,
         incompatible_messages: guard.incompatible_messages,
         oversized_messages: guard.oversized_messages,
@@ -602,6 +640,38 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         failed_syncs: guard.failed_syncs,
         known_peers: guard.peers.clone(),
     }
+}
+
+fn activate_best_chain(guard: &mut NodeState) -> Result<bool, String> {
+    let hasher = ToyHash;
+    let old_head = guard.chain.head_hash(&hasher);
+    let new_head = guard.fork_choice.best_hash();
+    if old_head == new_head {
+        return Ok(false);
+    }
+
+    guard.chain = chain_from_blocks(
+        guard.fork_choice.config().clone(),
+        guard.fork_choice.best_chain(),
+    )?;
+    Ok(true)
+}
+
+fn chain_from_blocks(
+    config: ChainConfig,
+    blocks: Vec<chesscoin_core::domain::Block>,
+) -> Result<ChainState, String> {
+    let mut chain = ChainState::new(config);
+    let hasher = ToyHash;
+    let sampler = DeterministicSampler;
+
+    for block in blocks {
+        chain
+            .apply_block(&hasher, &sampler, block)
+            .map_err(|error| format!("best chain failed validation: {error:?}"))?;
+    }
+
+    Ok(chain)
 }
 
 enum IncomingReadError {
@@ -652,10 +722,10 @@ fn read_limited_line_from<R: Read>(
         .map_err(|_| IncomingReadError::Io)
 }
 
-fn load_chain(path: &Path, config: ChainConfig) -> Result<ChainState, String> {
-    let mut chain = ChainState::new(config);
+fn load_chains(path: &Path, config: ChainConfig) -> Result<(ChainState, ForkChoiceState), String> {
+    let mut fork_choice = ForkChoiceState::new(config.clone());
     if !path.exists() {
-        return Ok(chain);
+        return Ok((ChainState::new(config), fork_choice));
     }
 
     let file = fs::File::open(path)
@@ -682,8 +752,8 @@ fn load_chain(path: &Path, config: ChainConfig) -> Result<ChainState, String> {
                 line_number + 1
             )
         })?;
-        chain
-            .apply_block(&hasher, &sampler, block)
+        fork_choice
+            .insert_block(&hasher, &sampler, block)
             .map_err(|error| {
                 format!(
                     "stored block failed validation in {} line {}: {error:?}",
@@ -693,7 +763,8 @@ fn load_chain(path: &Path, config: ChainConfig) -> Result<ChainState, String> {
             })?;
     }
 
-    Ok(chain)
+    let chain = chain_from_blocks(config, fork_choice.best_chain())?;
+    Ok((chain, fork_choice))
 }
 
 fn append_block(path: &Path, block: &chesscoin_core::domain::Block) -> Result<(), String> {
@@ -743,9 +814,20 @@ mod tests {
     }
 
     fn wait_for_rejections(node: &RunningNode, rejected: usize) -> NodeSnapshot {
-        for _ in 0..100 {
+        for _ in 0..250 {
             let snapshot = node.snapshot();
             if snapshot.rejected_blocks >= rejected {
+                return snapshot;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        node.snapshot()
+    }
+
+    fn wait_for_oversized(node: &RunningNode, oversized: usize) -> NodeSnapshot {
+        for _ in 0..250 {
+            let snapshot = node.snapshot();
+            if snapshot.oversized_messages >= oversized {
                 return snapshot;
             }
             thread::sleep(Duration::from_millis(20));
@@ -762,6 +844,125 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         node.snapshot()
+    }
+
+    fn small_chain_config() -> ChainConfig {
+        ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        }
+    }
+
+    fn test_state(config: ChainConfig, storage_path: Option<PathBuf>) -> NodeState {
+        NodeState {
+            node_id: "test-node".to_string(),
+            bound_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            chain: ChainState::new(config.clone()),
+            fork_choice: ForkChoiceState::new(config),
+            peers: Vec::new(),
+            accepted_blocks: 0,
+            rejected_blocks: 0,
+            mined_blocks: 0,
+            reorgs: 0,
+            malformed_messages: 0,
+            incompatible_messages: 0,
+            oversized_messages: 0,
+            outbound_blocks: 0,
+            failed_broadcasts: 0,
+            synced_blocks: 0,
+            failed_syncs: 0,
+            storage_path,
+            network: NetworkConfig::default(),
+            sync: SyncConfig::default(),
+        }
+    }
+
+    fn competing_branch_blocks() -> Vec<chesscoin_core::domain::Block> {
+        let config = small_chain_config();
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let mut base_chain = ChainState::new(config);
+        let block0 = base_chain.mine_next_block(&hasher, &sampler, 1, 2);
+        base_chain
+            .apply_block(&hasher, &sampler, block0.clone())
+            .expect("block0 applies");
+
+        let branch_a1 = base_chain.mine_next_block(&hasher, &sampler, 3, 4);
+        let branch_b1 = base_chain.mine_next_block(&hasher, &sampler, 5, 6);
+        let mut branch_a_chain = base_chain.clone();
+        branch_a_chain
+            .apply_block(&hasher, &sampler, branch_a1.clone())
+            .expect("branch a1 applies");
+        let branch_a2 = branch_a_chain.mine_next_block(&hasher, &sampler, 7, 8);
+
+        vec![block0, branch_b1, branch_a1, branch_a2]
+    }
+
+    #[test]
+    fn runtime_tracks_competing_branches_and_activates_best_tip() {
+        let blocks = competing_branch_blocks();
+        let best_hash = block_id(&blocks[3]);
+        let mut state = test_state(small_chain_config(), None);
+
+        for block in blocks {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        assert_eq!(state.chain.height(), 3);
+        assert_eq!(state.chain.head_hash(&ToyHash), best_hash);
+        assert_eq!(state.fork_choice.known_block_count(), 4);
+        assert_eq!(state.accepted_blocks, 4);
+        assert_eq!(state.rejected_blocks, 0);
+        assert!(state.reorgs >= 1, "{:?}", state.reorgs);
+    }
+
+    #[test]
+    fn duplicate_known_block_does_not_count_as_rejected() {
+        let blocks = competing_branch_blocks();
+        let mut state = test_state(small_chain_config(), None);
+
+        assert_eq!(
+            apply_incoming_block(&mut state, blocks[0].clone(), BlockSource::Gossip),
+            BlockApplication::Accepted
+        );
+        assert_eq!(
+            apply_incoming_block(&mut state, blocks[0].clone(), BlockSource::Gossip),
+            BlockApplication::AlreadyKnown
+        );
+
+        assert_eq!(state.chain.height(), 1);
+        assert_eq!(state.fork_choice.known_block_count(), 1);
+        assert_eq!(state.accepted_blocks, 1);
+        assert_eq!(state.rejected_blocks, 0);
+    }
+
+    #[test]
+    fn persisted_fork_choice_reloads_best_branch() {
+        let data_dir = unique_test_data_dir("fork-reload");
+        let storage_path = data_dir.join("blocks.log");
+        let blocks = competing_branch_blocks();
+        let best_hash = block_id(&blocks[3]);
+        let mut state = test_state(small_chain_config(), Some(storage_path.clone()));
+
+        for block in blocks {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        let (chain, fork_choice) =
+            load_chains(&storage_path, small_chain_config()).expect("fork choice reloads");
+
+        assert_eq!(chain.height(), 3);
+        assert_eq!(chain.head_hash(&ToyHash), best_hash);
+        assert_eq!(fork_choice.known_block_count(), 4);
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]
@@ -913,7 +1114,7 @@ mod tests {
         stream.write_all(b"BLOCK_TOO_LARGE\n").expect("write");
         stream.flush().expect("flush");
 
-        let snapshot = wait_for_rejections(&node, 1);
+        let snapshot = wait_for_oversized(&node, 1);
 
         assert_eq!(snapshot.rejected_blocks, 1);
         assert_eq!(snapshot.oversized_messages, 1);

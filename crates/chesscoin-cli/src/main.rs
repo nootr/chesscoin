@@ -141,11 +141,13 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} mined={} accepted={} rejected={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} head={}",
+                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} head={}",
                 snapshot.height,
                 snapshot.mined_blocks,
+                snapshot.known_blocks,
                 snapshot.accepted_blocks,
                 snapshot.rejected_blocks,
+                snapshot.reorgs,
                 snapshot.malformed_messages,
                 snapshot.incompatible_messages,
                 snapshot.oversized_messages,
@@ -162,6 +164,8 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("accepted blocks      {}", snapshot.accepted_blocks);
     println!("rejected blocks      {}", snapshot.rejected_blocks);
     println!("mined blocks         {}", snapshot.mined_blocks);
+    println!("known blocks         {}", snapshot.known_blocks);
+    println!("reorgs               {}", snapshot.reorgs);
     println!("synced blocks        {}", snapshot.synced_blocks);
     println!("failed syncs         {}", snapshot.failed_syncs);
     println!("malformed messages   {}", snapshot.malformed_messages);

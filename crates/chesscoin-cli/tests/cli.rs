@@ -43,6 +43,7 @@ fn node_command_mines_one_block() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("ChessCoin node v0.1"));
     assert!(stdout.contains("final height         1"));
+    assert!(stdout.contains("known blocks         1"));
 }
 
 #[test]
@@ -185,6 +186,7 @@ fn node_command_continuously_mines_blocks() {
         "{stdout}"
     );
     assert!(stdout.contains("mined blocks         "), "{stdout}");
+    assert!(stdout.contains("known blocks         "), "{stdout}");
     assert!(
         stdout.contains("final height         3")
             || stdout.contains("final height         4")

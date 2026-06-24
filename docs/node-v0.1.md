@@ -80,6 +80,8 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
+Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, and `reorgs`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head.
+
 ## Verification
 
 Run domain and adapter tests:

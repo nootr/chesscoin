@@ -501,6 +501,10 @@ impl ForkChoiceState {
         self.best_tip.unwrap_or_else(Digest::zero)
     }
 
+    pub fn known_block_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn best_model(&self) -> ModelState {
         self.best_tip
             .and_then(|hash| {
@@ -529,6 +533,53 @@ impl ForkChoiceState {
 
         chain.reverse();
         chain
+    }
+
+    pub fn contains_block(&self, hash: Digest) -> bool {
+        self.nodes.contains_key(&hash)
+    }
+
+    pub fn mine_next_block<H, S>(
+        &self,
+        hasher: &H,
+        sampler: &S,
+        training_seed: u64,
+        sampling_entropy: u64,
+    ) -> Block
+    where
+        H: HashPort,
+        S: SamplingPort,
+    {
+        let simulator = ProtocolSimulator::new(hasher, sampler);
+        let trace = simulator.build_trace_from(
+            self.best_model(),
+            training_seed,
+            self.config.steps_per_block,
+        );
+        let mut header = BlockHeader {
+            height: self.best_height(),
+            previous_block: self.best_hash(),
+            model_before: trace.initial_model.clone(),
+            model_after: trace.candidate_model.clone(),
+            trace_root: trace.root,
+            training_seed,
+            sampling_entropy,
+            sample_count: self.config.samples_per_block,
+            nonce: 0,
+        };
+
+        loop {
+            let candidate = Block {
+                header: header.clone(),
+                trace: trace.clone(),
+            };
+            if block_hash(hasher, &candidate).leading_zero_bits()
+                >= self.config.difficulty_zero_bits
+            {
+                return candidate;
+            }
+            header.nonce = header.nonce.wrapping_add(1);
+        }
     }
 
     pub fn insert_block<H, S>(
