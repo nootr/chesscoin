@@ -136,6 +136,7 @@ pub struct NodeSnapshot {
     pub failed_responses: usize,
     pub hello_announcements: usize,
     pub failed_hello_announcements: usize,
+    pub active_inbound_connections: usize,
     pub dropped_inbound_connections: usize,
     pub peer_rejections: usize,
     pub synced_blocks: usize,
@@ -209,6 +210,7 @@ struct NodeState {
     failed_responses: usize,
     hello_announcements: usize,
     failed_hello_announcements: usize,
+    active_inbound_connections: Arc<AtomicUsize>,
     dropped_inbound_connections: usize,
     peer_rejections: usize,
     synced_blocks: usize,
@@ -276,6 +278,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         config.peers,
         config.network.max_peers,
     );
+    let active_inbound_connections = Arc::new(AtomicUsize::new(0));
     let state = Arc::new(Mutex::new(NodeState {
         node_id: config.node_id,
         bound_addr,
@@ -295,6 +298,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         failed_responses: 0,
         hello_announcements: 0,
         failed_hello_announcements: 0,
+        active_inbound_connections: Arc::clone(&active_inbound_connections),
         dropped_inbound_connections: 0,
         peer_rejections,
         synced_blocks: 0,
@@ -308,7 +312,6 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
 
     let thread_state = Arc::clone(&state);
     let thread_stop = Arc::clone(&stop);
-    let active_inbound_connections = Arc::new(AtomicUsize::new(0));
     let initial_miner = config.miner.clone();
     let handle = thread::spawn(move || {
         node_loop(
@@ -1430,6 +1433,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         failed_responses: guard.failed_responses,
         hello_announcements: guard.hello_announcements,
         failed_hello_announcements: guard.failed_hello_announcements,
+        active_inbound_connections: guard.active_inbound_connections.load(Ordering::SeqCst),
         dropped_inbound_connections: guard.dropped_inbound_connections,
         peer_rejections: guard.peer_rejections,
         synced_blocks: guard.synced_blocks,
@@ -1902,6 +1906,7 @@ mod tests {
             failed_responses: 0,
             hello_announcements: 0,
             failed_hello_announcements: 0,
+            active_inbound_connections: Arc::new(AtomicUsize::new(0)),
             dropped_inbound_connections: 0,
             peer_rejections: 0,
             synced_blocks: 0,
@@ -2145,6 +2150,20 @@ mod tests {
 
         drop(held_streams);
         node.stop();
+    }
+
+    #[test]
+    fn inbound_connection_permit_tracks_active_count() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let first = reserve_inbound_connection(Arc::clone(&active), 1).expect("first permit");
+
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert!(reserve_inbound_connection(Arc::clone(&active), 1).is_none());
+
+        drop(first);
+
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(reserve_inbound_connection(active, 1).is_some());
     }
 
     #[test]
@@ -2942,22 +2961,13 @@ mod tests {
         config.storage = Some(StorageConfig {
             data_dir: data_dir.clone(),
         });
-        config.network.max_inbound_connections = 1;
-        config.network.read_timeout = Duration::from_millis(100);
+        config.network.read_timeout = Duration::from_secs(2);
         let node = start_node(config.clone()).expect("node starts");
 
         let mut held_streams = Vec::new();
         let mut first = TcpStream::connect(node.bound_addr()).expect("first connect");
         first.write_all(b"HOLD").expect("hold first connection");
         held_streams.push(first);
-
-        for _ in 0..8 {
-            held_streams.push(TcpStream::connect(node.bound_addr()).expect("extra connect"));
-            if wait_for_dropped_inbound(&node, 1).dropped_inbound_connections >= 1 {
-                break;
-            }
-        }
-        assert!(node.snapshot().dropped_inbound_connections >= 1);
 
         node.stop();
 
@@ -3459,7 +3469,9 @@ mod tests {
         let node = start_node(NodeConfig::localhost_ephemeral("chain-a")).expect("node starts");
         let wrong_chain = crate::wire::WireConfig {
             network_id: crate::wire::WireConfig::default().network_id,
-            chain_fingerprint: "steps=99;samples=4;difficulty=0".to_string(),
+            chain_fingerprint:
+                "rules=v1;model_width=8;learning_rate_ppm=125000;steps=99;samples=4;difficulty=0"
+                    .to_string(),
             protocol_version: crate::wire::PROTOCOL_VERSION,
         };
         let message = crate::wire::encode_network_message(

@@ -7,6 +7,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use chesscoin_core::application::ChainConfig;
+use chesscoin_node::wire::chain_fingerprint;
+
 fn chesscoin_bin() -> &'static str {
     env!("CARGO_BIN_EXE_chesscoin")
 }
@@ -348,7 +351,14 @@ fn node_command_reads_config_file() {
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
         stdout.contains(
-            "network              id=chesscoin-local protocol=6 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8 max_inbound_connections=7",
+            &format!(
+                "network              id=chesscoin-local protocol=6 chain={} max_message_bytes=4096 max_peers=8 max_inbound_connections=7",
+                chain_fingerprint(&ChainConfig {
+                    steps_per_block: 4,
+                    samples_per_block: 4,
+                    difficulty_zero_bits: 0,
+                })
+            ),
         ),
         "{stdout}"
     );

@@ -2,11 +2,13 @@ use std::net::SocketAddr;
 
 use chesscoin_core::application::ChainConfig;
 use chesscoin_core::domain::{
-    Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace, MODEL_WIDTH,
+    Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace,
+    LEARNING_RATE_PPM, MODEL_WIDTH,
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
 pub const PROTOCOL_VERSION: u16 = 6;
+pub const CHAIN_RULES_VERSION: &str = "v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
@@ -27,8 +29,13 @@ impl Default for WireConfig {
 
 pub fn chain_fingerprint(config: &ChainConfig) -> String {
     format!(
-        "steps={};samples={};difficulty={}",
-        config.steps_per_block, config.samples_per_block, config.difficulty_zero_bits
+        "rules={};model_width={};learning_rate_ppm={};steps={};samples={};difficulty={}",
+        CHAIN_RULES_VERSION,
+        MODEL_WIDTH,
+        LEARNING_RATE_PPM,
+        config.steps_per_block,
+        config.samples_per_block,
+        config.difficulty_zero_bits
     )
 }
 
@@ -712,6 +719,20 @@ mod tests {
         let decoded = decode_network_message(&encoded, &config).expect("valid envelope");
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn chain_fingerprint_includes_training_rule_parameters() {
+        let fingerprint = chain_fingerprint(&ChainConfig {
+            steps_per_block: 3,
+            samples_per_block: 2,
+            difficulty_zero_bits: 1,
+        });
+
+        assert_eq!(
+            fingerprint,
+            "rules=v1;model_width=8;learning_rate_ppm=125000;steps=3;samples=2;difficulty=1"
+        );
     }
 
     #[test]

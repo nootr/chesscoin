@@ -1,6 +1,7 @@
 use std::fmt;
 
 pub const MODEL_WIDTH: usize = 8;
+pub const LEARNING_RATE_PPM: i64 = 125_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Digest([u8; 32]);
@@ -120,7 +121,7 @@ impl TrainingStep {
         let weight_index = (mixed as usize) % MODEL_WIDTH;
         let batch_id = mix64(mixed ^ 0xa076_1d64_78bd_642f);
         let gradient = deterministic_gradient(seed, index, state_before, mixed);
-        let learning_rate_ppm = 125_000;
+        let learning_rate_ppm = LEARNING_RATE_PPM;
 
         let mut next_weights = *state_before.weights();
         let delta = (gradient * learning_rate_ppm) / 1_000_000;
