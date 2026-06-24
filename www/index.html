@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChessCoin Whitepaper | Proof-of-Training Chess Chain</title>
+    <meta name="description" content="ChessCoin is a proof-of-training crypto protocol where network work verifies deterministic chess AI training.">
+    <meta name="author" content="Joris Hartog">
+    <meta name="creator" content="Joris Hartog">
+    <meta name="application-name" content="ChessCoin">
+    <meta name="theme-color" content="#111317">
+    <meta property="og:title" content="ChessCoin Whitepaper">
+    <meta property="og:description" content="A verifiable computation blockchain where mining improves a global chess AI.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="https://cc.jhx.app/assets/chesscoin-hero.png">
+    <meta property="article:author" content="Joris Hartog">
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg: #111317;
+        --ink: #f4f0e8;
+        --muted: #b9b2a6;
+        --line: rgba(244, 240, 232, 0.16);
+        --gold: #d6ad5f;
+        --cyan: #61d4e8;
+        --paper: #f7f2e8;
+        --paper-ink: #181a1d;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .hero {
+        min-height: 100vh;
+        min-height: 100svh;
+        display: grid;
+        align-items: end;
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        background-image: url("assets/chesscoin-hero.png");
+        background-size: cover;
+        background-position: center right;
+        filter: saturate(0.95);
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background:
+          linear-gradient(90deg, rgba(17, 19, 23, 0.96) 0%, rgba(17, 19, 23, 0.78) 42%, rgba(17, 19, 23, 0.18) 100%),
+          linear-gradient(0deg, rgba(17, 19, 23, 0.96) 0%, rgba(17, 19, 23, 0.08) 44%);
+      }
+
+      .nav {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 1rem;
+        max-width: 1180px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 1.25rem;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 750;
+        text-decoration: none;
+      }
+
+      .mark {
+        width: 2.25rem;
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(214, 173, 95, 0.6);
+        border-radius: 50%;
+        color: var(--gold);
+        background: rgba(17, 19, 23, 0.72);
+        font-size: 1.2rem;
+      }
+
+      .hero-inner,
+      .section-inner {
+        max-width: 1180px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+
+      .hero-inner {
+        padding-top: 8rem;
+        padding-bottom: 4rem;
+      }
+
+      .kicker {
+        color: var(--cyan);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        line-height: 1.05;
+      }
+
+      .hero-title {
+        max-width: 760px;
+        margin-top: 1rem;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(3.6rem, 10vw, 8.5rem);
+        font-weight: 700;
+        line-height: 1.05;
+      }
+
+      .subtitle {
+        max-width: 680px;
+        margin: 1.25rem 0 0;
+        color: var(--muted);
+        font-size: clamp(1.05rem, 2vw, 1.35rem);
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 2rem;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.9rem;
+        padding: 0.85rem 1.1rem;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.08);
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        border-color: rgba(214, 173, 95, 0.7);
+        background: var(--gold);
+        color: #16120a;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        max-width: 760px;
+        margin-top: 3rem;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+
+      .stat {
+        min-width: 0;
+        padding: 1rem;
+        background: rgba(17, 19, 23, 0.74);
+      }
+
+      .stat strong {
+        display: block;
+        color: var(--ink);
+        font-size: 1.35rem;
+      }
+
+      .stat span {
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      main {
+        background: var(--paper);
+        color: var(--paper-ink);
+      }
+
+      .whitepaper-document {
+        max-width: 820px;
+        margin: 0 auto;
+        padding: 5rem 1.25rem;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 1.05rem;
+        line-height: 1.72;
+      }
+
+      .paper-title {
+        max-width: none;
+        margin: 0;
+        color: var(--paper-ink);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(2.25rem, 6vw, 4.25rem);
+        line-height: 1.05;
+        text-align: center;
+      }
+
+      .paper-subtitle {
+        max-width: 680px;
+        margin: 1rem auto 0;
+        color: rgba(24, 26, 29, 0.72);
+        text-align: center;
+        font-size: 1.1rem;
+      }
+
+      .paper-authors {
+        margin: 1.5rem 0 2.5rem;
+        color: rgba(24, 26, 29, 0.62);
+        text-align: center;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 0.92rem;
+      }
+
+      .paper-abstract {
+        padding: 1.25rem 0;
+        border-top: 1px solid rgba(24, 26, 29, 0.24);
+        border-bottom: 1px solid rgba(24, 26, 29, 0.24);
+      }
+
+      .paper-abstract h2,
+      .paper-section h2 {
+        margin: 0 0 0.75rem;
+        color: var(--paper-ink);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 1.12rem;
+        letter-spacing: 0;
+        line-height: 1.3;
+      }
+
+      .paper-section h3 {
+        margin: 1.25rem 0 0.35rem;
+        color: var(--paper-ink);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 1rem;
+        line-height: 1.35;
+      }
+
+      .paper-abstract p,
+      .paper-section p {
+        margin: 0 0 1rem;
+      }
+
+      .whitepaper-document .paper-section {
+        padding-top: 2.25rem;
+      }
+
+      .paper-section ul,
+      .paper-section ol {
+        margin: 0 0 1rem;
+        padding-left: 1.35rem;
+      }
+
+      .paper-section li {
+        margin-bottom: 0.35rem;
+      }
+
+      .paper-equation {
+        margin: 1rem 0;
+        padding: 0.85rem 1rem;
+        overflow-x: auto;
+        border: 1px solid rgba(24, 26, 29, 0.18);
+        background: rgba(24, 26, 29, 0.04);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.95rem;
+        text-align: center;
+      }
+
+      .paper-table {
+        width: 100%;
+        margin: 1rem 0 1.25rem;
+        border-collapse: collapse;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 0.92rem;
+      }
+
+      .paper-table th,
+      .paper-table td {
+        padding: 0.65rem 0.75rem;
+        border: 1px solid rgba(24, 26, 29, 0.18);
+        vertical-align: top;
+        text-align: left;
+      }
+
+      .paper-table th {
+        background: rgba(24, 26, 29, 0.06);
+      }
+
+      .paper-note {
+        margin: 1.25rem 0;
+        padding-left: 1rem;
+        border-left: 3px solid rgba(24, 26, 29, 0.32);
+        color: rgba(24, 26, 29, 0.72);
+      }
+
+      .toc {
+        columns: 2;
+        column-gap: 2rem;
+        margin: 0;
+        padding-left: 1.25rem;
+      }
+
+      .toc li {
+        break-inside: avoid;
+        margin-bottom: 0.45rem;
+      }
+
+      .toc a {
+        color: rgba(24, 26, 29, 0.82);
+        text-decoration-color: rgba(24, 26, 29, 0.28);
+      }
+
+      footer {
+        border-top: 1px solid var(--line);
+        padding: 2rem 1.25rem;
+        color: var(--muted);
+        background: #0d1015;
+      }
+
+      footer .section-inner {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0;
+      }
+
+      @media (max-width: 820px) {
+        .nav {
+          align-items: flex-start;
+        }
+
+        .hero {
+          min-height: 100vh;
+          min-height: 100svh;
+        }
+
+        .hero::after {
+          background:
+            linear-gradient(90deg, rgba(17, 19, 23, 0.96) 0%, rgba(17, 19, 23, 0.82) 70%, rgba(17, 19, 23, 0.36) 100%),
+            linear-gradient(0deg, rgba(17, 19, 23, 0.97) 0%, rgba(17, 19, 23, 0.1) 55%);
+        }
+
+        .stats {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          columns: 1;
+        }
+
+        footer .section-inner {
+          display: grid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="hero">
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="brand" href="#">
+          <span class="mark">C</span>
+          <span>ChessCoin</span>
+        </a>
+      </nav>
+
+      <div class="hero-inner">
+        <div class="kicker">Proof-of-Training Chess Chain</div>
+        <div class="hero-title">ChessCoin</div>
+        <p class="subtitle">A verifiable computation blockchain where mining work trains a shared chess AI under deterministic rules, sampled verification, and economic penalties for invalid traces.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#toc">Whitepaper</a>
+        </div>
+        <div class="stats" aria-label="Protocol pillars">
+          <div class="stat">
+            <strong>RandomX PoW</strong>
+            <span>CPU-oriented Sybil resistance</span>
+          </div>
+          <div class="stat">
+            <strong>PoT</strong>
+            <span>Deterministic chess AI training</span>
+          </div>
+          <div class="stat">
+            <strong>Slashing</strong>
+            <span>Fraud proofs and penalties</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="whitepaper">
+      <article id="toc" class="whitepaper-document">
+        <h1 class="paper-title">ChessCoin: Proof-of-Training Chess Chain</h1>
+        <p class="paper-subtitle">A RandomX Proof-of-Work blockchain for deterministic, verifiable chess model training</p>
+        <p class="paper-authors">Whitepaper v0.1 · Concept draft · Joris Hartog</p>
+
+        <section id="abstract" class="paper-abstract">
+          <h2>Abstract</h2>
+          <p>We propose ChessCoin, a blockchain protocol in which chain consensus is provided by RandomX Proof-of-Work while a separate proof-of-training layer directs useful computation toward the improvement of a shared chess model. The protocol distinguishes Sybil resistance from training correctness: RandomX determines block eligibility and chain weight, while deterministic training traces, commitment chaining, random sampling, and slashing conditions constrain model updates. The resulting system is not a cryptographic proof of machine-learning progress; rather, it is an economic and probabilistic construction intended to make invalid training submissions costly while preserving a public sequence of reproducible model transitions.</p>
+        </section>
+
+        <section class="paper-section">
+          <h2>Contents</h2>
+          <ol class="toc">
+            <li><a href="#introduction">Introduction</a></li>
+            <li><a href="#system-overview">System Model</a></li>
+            <li><a href="#consensus">Consensus Layer</a></li>
+            <li><a href="#model-state">Global Model State</a></li>
+            <li><a href="#mining-process">Training Work</a></li>
+            <li><a href="#trace-commitment">Trace Commitments</a></li>
+            <li><a href="#probabilistic-verification">Probabilistic Verification</a></li>
+            <li><a href="#slashing">Slashing Conditions</a></li>
+            <li><a href="#improvement">Model Evaluation</a></li>
+            <li><a href="#security">Security Discussion</a></li>
+            <li><a href="#limitations">Limitations</a></li>
+            <li><a href="#conclusion">Conclusion</a></li>
+          </ol>
+        </section>
+
+        <section id="introduction" class="paper-section">
+          <h2>1. Introduction</h2>
+          <p>Proof-of-Work networks intentionally consume computational resources in order to make Sybil attacks expensive. In conventional designs, the useful output of this computation is primarily the security of the ledger itself. ChessCoin investigates whether part of the surrounding mining process can be structured so that it also produces a reproducible artifact: incremental training of a chess-playing neural network.</p>
+          <p>The central design decision is separation of concerns. RandomX Proof-of-Work is used for consensus and chain selection. Training work is treated as a protocol-level payload whose correctness is verified through deterministic execution rules and sampled recomputation. This prevents the training problem from becoming the sole source of Sybil resistance, while still allowing model updates to be economically tied to block production.</p>
+        </section>
+
+        <section id="system-overview" class="paper-section">
+          <h2>2. System Model</h2>
+          <p>The protocol contains three logically distinct layers. The consensus layer orders blocks. The training layer specifies reproducible model transitions. The verification layer determines whether a submitted transition is eligible for reward and whether the submitter is subject to penalty.</p>
+          <table class="paper-table">
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Function</th>
+                <th>Primary Assumption</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Consensus</td>
+                <td>Block eligibility, chain ordering, and Sybil resistance.</td>
+                <td>RandomX work is costly to produce and cheap to verify.</td>
+              </tr>
+              <tr>
+                <td>Training</td>
+                <td>Deterministic transition from model state M_t to M_t+1.</td>
+                <td>All nodes can reproduce sampled transitions under fixed software and numeric rules.</td>
+              </tr>
+              <tr>
+                <td>Verification</td>
+                <td>Sampling, fraud detection, and slashing.</td>
+                <td>Invalid traces are likely to be detected with sufficient sampling probability.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="consensus" class="paper-section">
+          <h2>3. Consensus Layer</h2>
+          <p>ChessCoin uses RandomX Proof-of-Work for chain consensus. Miners search for valid block headers under a network difficulty target. Chain selection follows accumulated work, and difficulty adjustment is defined independently of training success.</p>
+          <p>RandomX is selected because its CPU-oriented and memory-hard design is more aligned with broad participation than specialized ASIC-first hashing. In this design, RandomX does not prove that training was performed correctly. It only proves that the block producer expended consensus work.</p>
+          <div class="paper-note">Design invariant: failure of a training submission must not compromise the ability of the consensus layer to order blocks.</div>
+        </section>
+
+        <section id="model-state" class="paper-section">
+          <h2>4. Global Model State</h2>
+          <p>The network maintains a canonical model checkpoint M_t as part of protocol state. A valid training submission proposes a transition to M_t+1, accompanied by metadata describing the training inputs, deterministic seed schedule, software version, optimizer parameters, and trace commitment root.</p>
+          <div class="paper-equation">M_t -> M_{t+1}</div>
+          <p>For a model transition to be admissible, the transition must be reproducible under the protocol's deterministic execution environment. Floating-point behavior, batching, random seeds, data ordering, and optimizer precision are therefore consensus-relevant parameters.</p>
+        </section>
+
+        <section id="mining-process" class="paper-section">
+          <h2>5. Training Work</h2>
+          <p>A miner that wishes to claim training reward performs the following procedure after producing or referencing an eligible RandomX block candidate:</p>
+          <ol>
+            <li>Fetch the canonical model checkpoint M_t and the protocol-defined training input set.</li>
+            <li>Execute the deterministic training procedure for a fixed compute budget.</li>
+            <li>Emit the candidate checkpoint M_t+1.</li>
+            <li>Publish a commitment-chained execution trace.</li>
+            <li>Bond collateral that may be slashed if sampled trace verification fails.</li>
+          </ol>
+          <p>The training layer can be configured to use self-play games, curated positions, or a deterministic dataset schedule. Regardless of source, the generated training sequence must be reproducible from public inputs.</p>
+        </section>
+
+        <section id="trace-commitment" class="paper-section">
+          <h2>6. Training Trace Commitments</h2>
+          <p>Each execution step S_i is committed into a hash chain. The final trace root is included in the block payload or associated training transaction. Validators can then request specific trace openings without requiring the entire training transcript to be stored on-chain.</p>
+          <div class="paper-equation">H_i = hash(H_{i-1}, S_i)</div>
+          <p>A trace step may include a compact representation of the model shard, batch identifier, optimizer state, gradient summary, and deterministic transition metadata. The exact encoding must be canonical, because non-canonical encodings would create verification ambiguity.</p>
+        </section>
+
+        <section id="probabilistic-verification" class="paper-section">
+          <h2>7. Probabilistic Verification</h2>
+          <p>Full recomputation of all submitted training would eliminate most practical benefit. ChessCoin therefore uses probabilistic verification. Validators derive random sample indices from block entropy after the trace commitment has been fixed. For each sampled step, the submitter must reveal enough data for validators to recompute the transition and compare it against the committed trace.</p>
+          <p>If p is the probability that a fraudulent trace step is sampled, and k independent samples are checked, the probability of escaping detection decreases as the sample count increases:</p>
+          <div class="paper-equation">P(undetected) = (1 - p)^k</div>
+          <p>This mechanism provides economic assurance, not absolute proof. Parameter selection must therefore consider training cost, verification cost, collateral size, and expected reward.</p>
+        </section>
+
+        <section id="slashing" class="paper-section">
+          <h2>8. Slashing Conditions</h2>
+          <p>A miner or training submitter may be penalized when a verifier demonstrates one of the following conditions:</p>
+          <ul>
+            <li>A sampled transition does not reproduce under the deterministic execution rules.</li>
+            <li>The opened trace data is inconsistent with the published commitment chain.</li>
+            <li>The final model checkpoint does not correspond to the committed trace root.</li>
+            <li>The candidate model violates protocol-defined evaluation constraints.</li>
+          </ul>
+          <p>Slashing is intended to make dishonest training submissions negative in expectation. The collateral requirement should exceed the expected gain from submitting fabricated or low-cost traces.</p>
+        </section>
+
+        <section id="improvement" class="paper-section">
+          <h2>9. Model Evaluation</h2>
+          <p>ChessCoin does not require every accepted update to strictly improve playing strength. Such a rule would be brittle, expensive, and vulnerable to benchmark overfitting. Instead, the protocol defines a bounded non-regression constraint over a fixed evaluation suite.</p>
+          <div class="paper-equation">Eval(M_{t+1}) >= Eval(M_t) - epsilon</div>
+          <p id="oracle">The evaluation oracle consists of fixed chess position suites, deterministic engine snapshots, and bounded compute budgets. The purpose is to reject clearly destructive updates while allowing the noisy, incremental nature of model training.</p>
+        </section>
+
+        <section id="security" class="paper-section">
+          <h2>10. Security Discussion</h2>
+          <p>ChessCoin's security model is hybrid. Chain integrity relies on RandomX Proof-of-Work and accumulated work. Training integrity relies on reproducibility, commitment binding, randomized sampling, and slashing. These mechanisms address different adversarial goals.</p>
+          <table class="paper-table">
+            <thead>
+              <tr>
+                <th>Attack</th>
+                <th>Mitigation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Sybil block production</td>
+                <td>RandomX difficulty and accumulated work.</td>
+              </tr>
+              <tr>
+                <td>Fabricated training trace</td>
+                <td>Commitment openings, sampled recomputation, and slashing.</td>
+              </tr>
+              <tr>
+                <td>Destructive model update</td>
+                <td>Bounded non-regression evaluation.</td>
+              </tr>
+              <tr>
+                <td>Verifier overload</td>
+                <td>Probabilistic sampling and bounded trace openings.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="limitations" class="paper-section">
+          <h2>11. Limitations</h2>
+          <p>The protocol does not provide an absolute cryptographic proof that all training was performed correctly. It provides a probabilistic fraud-detection mechanism whose effectiveness depends on sampling parameters, collateral sizing, and deterministic reproducibility. The design also inherits the operational complexity of distributed machine-learning systems, including hardware variance, software versioning, numerical precision, and benchmark selection.</p>
+          <p>A second limitation is incentive alignment. A model can satisfy short-term evaluation constraints while failing to produce long-term useful progress. Future work should investigate richer evaluation regimes, delayed rewards, tournament-based assessment, and mechanisms that reduce benchmark overfitting.</p>
+        </section>
+
+        <section id="conclusion" class="paper-section">
+          <h2>12. Conclusion</h2>
+          <p>ChessCoin combines RandomX Proof-of-Work with a deterministic proof-of-training layer for chess AI. The consensus mechanism secures block production, while trace commitments and sampled verification create economic pressure for honest training submissions. The result is a research-oriented blockchain design in which mining remains Sybil-resistant while adjacent protocol work produces a public sequence of reproducible model updates.</p>
+        </section>
+      </article>
+    </main>
+
+    <footer>
+      <div class="section-inner">
+        <span>ChessCoin whitepaper</span>
+        <span>Proof-of-Training Chess Chain</span>
+      </div>
+    </footer>
+  </body>
+</html>
