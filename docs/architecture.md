@@ -39,7 +39,7 @@ That separation is deliberate. Tests can exercise protocol behavior through fake
 6. Receivers validate height, previous hash, model transition metadata, trace root, commitment chain, proof-of-work, and sampled deterministic transitions.
 7. Accepted blocks are inserted into fork choice, persisted as checksummed block-log records when storage is configured, and gossiped to known peers.
 8. Peer messages and known peers are bounded by configured limits, with malformed, oversized, incompatible, and rejected peer additions counted in node snapshots.
-9. Peer messages carry an explicit protocol version and network id, so incompatible networks are rejected before block handling.
+9. Peer messages carry an explicit protocol version, network id, and chain fingerprint, so incompatible networks or chain parameters are rejected before block handling.
 10. Late peers can request missing best-chain blocks with block locators and validate each synced block through the normal fork-choice insertion path.
 
 ## Current Research Limits

@@ -12,6 +12,7 @@ use chesscoin_node::adapters::{DeterministicSampler, ToyHash};
 use chesscoin_node::runtime::{
     start_node, MinerConfig, NetworkConfig, NodeCommand, NodeConfig, StorageConfig, SyncConfig,
 };
+use chesscoin_node::wire::chain_fingerprint;
 
 fn main() -> ExitCode {
     match run() {
@@ -116,9 +117,10 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("peers                {:?}", startup.known_peers);
     println!("height               {}", startup.height);
     println!(
-        "network              id={} protocol={} max_message_bytes={} max_peers={}",
+        "network              id={} protocol={} chain={} max_message_bytes={} max_peers={}",
         request.network_id,
         request.protocol_version,
+        request.chain_fingerprint,
         request.network_max_message_bytes,
         request.network_max_peers
     );
@@ -223,6 +225,7 @@ struct NodeRequest {
     mining_interval: Duration,
     network_max_message_bytes: usize,
     network_max_peers: usize,
+    chain_fingerprint: String,
     network_id: String,
     protocol_version: u16,
     run_ms: u64,
@@ -250,6 +253,7 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
         mining_interval: Duration::from_secs(5),
         network_max_message_bytes: network_defaults.max_message_bytes,
         network_max_peers: network_defaults.max_peers,
+        chain_fingerprint: network_defaults.wire.chain_fingerprint.clone(),
         network_id: network_defaults.wire.network_id.clone(),
         protocol_version: network_defaults.wire.protocol_version,
         run_ms: 0,
@@ -376,6 +380,8 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
     if request.config.sync.max_locator_hashes == 0 {
         return Err("--sync-locator-hashes must be greater than zero".to_string());
     }
+    request.chain_fingerprint = chain_fingerprint(&request.config.chain);
+    request.config.network.wire.chain_fingerprint = request.chain_fingerprint.clone();
 
     Ok(request)
 }

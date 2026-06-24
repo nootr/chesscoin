@@ -1,13 +1,15 @@
+use chesscoin_core::application::ChainConfig;
 use chesscoin_core::domain::{
     Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace, MODEL_WIDTH,
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
     pub network_id: String,
+    pub chain_fingerprint: String,
     pub protocol_version: u16,
 }
 
@@ -15,9 +17,17 @@ impl Default for WireConfig {
     fn default() -> Self {
         Self {
             network_id: "chesscoin-local".to_string(),
+            chain_fingerprint: chain_fingerprint(&ChainConfig::default()),
             protocol_version: PROTOCOL_VERSION,
         }
     }
+}
+
+pub fn chain_fingerprint(config: &ChainConfig) -> String {
+    format!(
+        "steps={};samples={};difficulty={}",
+        config.steps_per_block, config.samples_per_block, config.difficulty_zero_bits
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,18 +51,19 @@ pub enum PeerMessage {
 
 pub fn encode_network_message(config: &WireConfig, message: &PeerMessage) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}",
         WIRE_MAGIC,
         config.protocol_version,
         escape(&config.network_id),
+        escape(&config.chain_fingerprint),
         encode_message(message)
     )
 }
 
 pub fn decode_network_message(line: &str, config: &WireConfig) -> Result<PeerMessage, String> {
     let trimmed = line.trim_end_matches(['\r', '\n']);
-    let fields = trimmed.splitn(4, '|').collect::<Vec<_>>();
-    if fields.len() != 4 {
+    let fields = trimmed.splitn(5, '|').collect::<Vec<_>>();
+    if fields.len() != 5 {
         return Err("network message requires envelope".to_string());
     }
     if fields[0] != WIRE_MAGIC {
@@ -66,7 +77,11 @@ pub fn decode_network_message(line: &str, config: &WireConfig) -> Result<PeerMes
     if network_id != config.network_id {
         return Err("incompatible network id".to_string());
     }
-    decode_message(fields[3])
+    let chain_fingerprint = unescape(fields[3])?;
+    if chain_fingerprint != config.chain_fingerprint {
+        return Err("incompatible chain fingerprint".to_string());
+    }
+    decode_message(fields[4])
 }
 
 pub fn encode_message(message: &PeerMessage) -> String {
@@ -422,6 +437,7 @@ mod tests {
         let encoded = encode_network_message(
             &WireConfig {
                 network_id: "one".to_string(),
+                chain_fingerprint: "chain-a".to_string(),
                 protocol_version: PROTOCOL_VERSION,
             },
             &PeerMessage::EndBlocks,
@@ -431,6 +447,29 @@ mod tests {
             &encoded,
             &WireConfig {
                 network_id: "two".to_string(),
+                chain_fingerprint: "chain-a".to_string(),
+                protocol_version: PROTOCOL_VERSION,
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn network_envelope_rejects_wrong_chain_fingerprint() {
+        let encoded = encode_network_message(
+            &WireConfig {
+                network_id: "one".to_string(),
+                chain_fingerprint: "chain-a".to_string(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+            &PeerMessage::EndBlocks,
+        );
+
+        assert!(decode_network_message(
+            &encoded,
+            &WireConfig {
+                network_id: "one".to_string(),
+                chain_fingerprint: "chain-b".to_string(),
                 protocol_version: PROTOCOL_VERSION,
             }
         )

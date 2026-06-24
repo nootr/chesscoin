@@ -13,8 +13,8 @@ use chesscoin_core::ports::HashPort;
 
 use crate::adapters::{DeterministicSampler, ToyHash};
 use crate::wire::{
-    decode_block_message, decode_network_message, encode_block_message, encode_network_message,
-    PeerMessage, WireConfig,
+    chain_fingerprint, decode_block_message, decode_network_message, encode_block_message,
+    encode_network_message, PeerMessage, WireConfig,
 };
 
 const STORAGE_RECORD_VERSION: &str = "CCBLK1";
@@ -197,7 +197,8 @@ struct NodeState {
     sync: SyncConfig,
 }
 
-pub fn start_node(config: NodeConfig) -> Result<RunningNode, String> {
+pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
+    config.network.wire.chain_fingerprint = chain_fingerprint(&config.chain);
     let listener = TcpListener::bind(config.listen_addr)
         .map_err(|error| format!("failed to bind {}: {error}", config.listen_addr))?;
     listener
@@ -1475,10 +1476,33 @@ mod tests {
         let node = start_node(NodeConfig::localhost_ephemeral("network-a")).expect("node starts");
         let wrong_network = crate::wire::WireConfig {
             network_id: "other-network".to_string(),
+            chain_fingerprint: crate::wire::chain_fingerprint(&ChainConfig::default()),
             protocol_version: crate::wire::PROTOCOL_VERSION,
         };
         let message = crate::wire::encode_network_message(
             &wrong_network,
+            &PeerMessage::GetBlocks {
+                from_height: 0,
+                limit: 1,
+            },
+        ) + "\n";
+        let snapshot = send_until_incompatible(&node, &message);
+
+        assert!(snapshot.incompatible_messages >= 1, "{snapshot:?}");
+
+        node.stop();
+    }
+
+    #[test]
+    fn incompatible_chain_fingerprint_message_is_counted() {
+        let node = start_node(NodeConfig::localhost_ephemeral("chain-a")).expect("node starts");
+        let wrong_chain = crate::wire::WireConfig {
+            network_id: crate::wire::WireConfig::default().network_id,
+            chain_fingerprint: "steps=99;samples=4;difficulty=0".to_string(),
+            protocol_version: crate::wire::PROTOCOL_VERSION,
+        };
+        let message = crate::wire::encode_network_message(
+            &wrong_chain,
             &PeerMessage::GetBlocks {
                 from_height: 0,
                 limit: 1,
