@@ -126,6 +126,7 @@ pub struct NodeSnapshot {
     pub peer_rejections: usize,
     pub synced_blocks: usize,
     pub failed_syncs: usize,
+    pub storage_failures: usize,
     pub known_peers: Vec<SocketAddr>,
 }
 
@@ -193,6 +194,7 @@ struct NodeState {
     peer_rejections: usize,
     synced_blocks: usize,
     failed_syncs: usize,
+    storage_failures: usize,
     storage_path: Option<PathBuf>,
     network: NetworkConfig,
     sync: SyncConfig,
@@ -244,6 +246,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         peer_rejections,
         synced_blocks: 0,
         failed_syncs: 0,
+        storage_failures: 0,
         storage_path,
         network: config.network,
         sync: config.sync,
@@ -538,9 +541,7 @@ fn mine_once(state: &Arc<Mutex<NodeState>>, training_seed: u64, sampling_entropy
             .insert_block(&hasher, &sampler, block.clone())
             .expect("locally mined block should validate");
         activate_best_chain(&mut guard).expect("locally mined chain should activate");
-        if let Some(path) = guard.storage_path.as_deref() {
-            append_block(path, guard.chain.config(), &block).expect("persist locally mined block");
-        }
+        persist_block(&mut guard, &block);
         guard.mined_blocks += 1;
         block
     };
@@ -580,9 +581,7 @@ fn apply_incoming_block(
         .insert_block(&hasher, &sampler, block.clone())
     {
         Ok(_) => {
-            if let Some(path) = guard.storage_path.as_deref() {
-                let _ = append_block(path, guard.chain.config(), &block);
-            }
+            persist_block(guard, &block);
             if activate_best_chain(guard).is_ok()
                 && old_head != Digest::zero()
                 && block.header.previous_block != old_head
@@ -603,6 +602,16 @@ fn apply_incoming_block(
             }
             BlockApplication::Rejected
         }
+    }
+}
+
+fn persist_block(guard: &mut NodeState, block: &chesscoin_core::domain::Block) {
+    let Some(path) = guard.storage_path.clone() else {
+        return;
+    };
+
+    if append_block(&path, guard.chain.config(), block).is_err() {
+        guard.storage_failures += 1;
     }
 }
 
@@ -860,6 +869,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         peer_rejections: guard.peer_rejections,
         synced_blocks: guard.synced_blocks,
         failed_syncs: guard.failed_syncs,
+        storage_failures: guard.storage_failures,
         known_peers: guard.peers.clone(),
     }
 }
@@ -1282,6 +1292,7 @@ mod tests {
             peer_rejections: 0,
             synced_blocks: 0,
             failed_syncs: 0,
+            storage_failures: 0,
             storage_path,
             network: NetworkConfig::default(),
             sync: SyncConfig::default(),
@@ -1815,6 +1826,34 @@ mod tests {
 
         restarted.stop();
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn local_mining_counts_storage_failures_without_panicking() {
+        let data_dir = unique_test_data_dir("storage-failure");
+        fs::write(&data_dir, b"not a directory").expect("write file in data-dir position");
+        let mut config = NodeConfig::localhost_ephemeral("storage-failure");
+        config.chain.difficulty_zero_bits = 0;
+        config.chain.steps_per_block = 4;
+        config.chain.samples_per_block = 4;
+        config.storage = Some(StorageConfig {
+            data_dir: data_dir.clone(),
+        });
+        let node = start_node(config).expect("node starts");
+
+        node.send(NodeCommand::MineOnce {
+            training_seed: 77,
+            sampling_entropy: 88,
+        })
+        .expect("mine command sends");
+        let snapshot = wait_for_height(&node, 1);
+
+        assert_eq!(snapshot.height, 1);
+        assert_eq!(snapshot.mined_blocks, 1);
+        assert_eq!(snapshot.storage_failures, 1);
+
+        node.stop();
+        let _ = fs::remove_file(data_dir);
     }
 
     #[test]
