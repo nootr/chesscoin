@@ -263,6 +263,8 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         )
     });
 
+    announce_to_peers(&state);
+
     let node = RunningNode {
         bound_addr,
         state,
@@ -303,7 +305,11 @@ fn node_loop(
                     training_seed,
                     sampling_entropy,
                 } => mine_once(&state, training_seed, sampling_entropy),
-                NodeCommand::AddPeer(peer) => add_peer(&state, peer),
+                NodeCommand::AddPeer(peer) => {
+                    if add_peer(&state, peer) {
+                        announce_to_peer(state.as_ref(), peer);
+                    }
+                }
                 NodeCommand::StartMining(config) => {
                     miner = Some(config);
                     next_mine_at = Instant::now();
@@ -371,7 +377,12 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
     };
 
     match decode_network_message(&line, &network.wire) {
-        Ok(PeerMessage::Hello { .. }) => {}
+        Ok(PeerMessage::Hello { listen_addr, .. }) => {
+            let mut guard = state.lock().expect("node state lock poisoned");
+            if !add_peer_to_state(&mut guard, listen_addr) {
+                guard.peer_rejections += 1;
+            }
+        }
         Ok(PeerMessage::GetBlocks { from_height, limit }) => {
             serve_blocks(stream, state, from_height, limit);
         }
@@ -618,10 +629,13 @@ fn sync_from_peer(
     }
 }
 
-fn add_peer(state: &Arc<Mutex<NodeState>>, peer: SocketAddr) {
+fn add_peer(state: &Arc<Mutex<NodeState>>, peer: SocketAddr) -> bool {
     let mut guard = state.lock().expect("node state lock poisoned");
     if !add_peer_to_state(&mut guard, peer) {
         guard.peer_rejections += 1;
+        false
+    } else {
+        true
     }
 }
 
@@ -654,6 +668,41 @@ fn add_peer_to_state(guard: &mut NodeState, peer: SocketAddr) -> bool {
 
     guard.peers.push(peer);
     true
+}
+
+fn announce_to_peers(state: &Arc<Mutex<NodeState>>) {
+    let peers = {
+        let guard = state.lock().expect("node state lock poisoned");
+        guard.peers.clone()
+    };
+
+    for peer in peers {
+        announce_to_peer(state.as_ref(), peer);
+    }
+}
+
+fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) {
+    let (network, message) = {
+        let guard = state.lock().expect("node state lock poisoned");
+        let hasher = ToyHash;
+        (
+            guard.network.clone(),
+            PeerMessage::Hello {
+                node_id: guard.node_id.clone(),
+                height: guard.chain.height(),
+                head: guard.chain.head_hash(&hasher),
+                listen_addr: guard.bound_addr,
+            },
+        )
+    };
+    let line = encode_network_message(&network.wire, &message) + "\n";
+
+    if let Ok(mut stream) = TcpStream::connect_timeout(&peer, network.connect_timeout) {
+        let _ = stream
+            .set_write_timeout(Some(network.connect_timeout))
+            .and_then(|_| stream.write_all(line.as_bytes()))
+            .and_then(|_| stream.flush());
+    }
 }
 
 fn broadcast_block(state: &Arc<Mutex<NodeState>>, block: &chesscoin_core::domain::Block) {
@@ -1091,6 +1140,17 @@ mod tests {
         node.snapshot()
     }
 
+    fn wait_for_known_peer(node: &RunningNode, peer: SocketAddr) -> NodeSnapshot {
+        for _ in 0..250 {
+            let snapshot = node.snapshot();
+            if snapshot.known_peers.contains(&peer) {
+                return snapshot;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        node.snapshot()
+    }
+
     fn small_chain_config() -> ChainConfig {
         ChainConfig {
             steps_per_block: 4,
@@ -1192,6 +1252,25 @@ mod tests {
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.peers, vec![peer_a]);
         assert_eq!(guard.peer_rejections, 2);
+    }
+
+    #[test]
+    fn startup_hello_announces_configured_peer_listen_address() {
+        let mut config_a = NodeConfig::localhost_ephemeral("node-a");
+        config_a.chain = small_chain_config();
+        let node_a = start_node(config_a).expect("node a starts");
+
+        let mut config_b = NodeConfig::localhost_ephemeral("node-b");
+        config_b.chain = small_chain_config();
+        config_b.peers.push(node_a.bound_addr());
+        let node_b = start_node(config_b).expect("node b starts");
+
+        let snapshot_a = wait_for_known_peer(&node_a, node_b.bound_addr());
+
+        assert!(snapshot_a.known_peers.contains(&node_b.bound_addr()));
+
+        node_b.stop();
+        node_a.stop();
     }
 
     #[test]

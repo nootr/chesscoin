@@ -1,10 +1,12 @@
+use std::net::SocketAddr;
+
 use chesscoin_core::application::ChainConfig;
 use chesscoin_core::domain::{
     Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace, MODEL_WIDTH,
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
@@ -36,6 +38,7 @@ pub enum PeerMessage {
         node_id: String,
         height: u64,
         head: Digest,
+        listen_addr: SocketAddr,
     },
     GetBlocks {
         from_height: u64,
@@ -90,8 +93,15 @@ pub fn encode_message(message: &PeerMessage) -> String {
             node_id,
             height,
             head,
+            listen_addr,
         } => {
-            format!("HELLO|{}|{}|{}", escape(node_id), height, head)
+            format!(
+                "HELLO|{}|{}|{}|{}",
+                escape(node_id),
+                height,
+                head,
+                listen_addr
+            )
         }
         PeerMessage::GetBlocks { from_height, limit } => {
             format!("GET_BLOCKS|{from_height}|{limit}")
@@ -175,14 +185,15 @@ fn decode_get_blocks(fields: &[&str]) -> Result<PeerMessage, String> {
 }
 
 fn decode_hello(fields: &[&str]) -> Result<PeerMessage, String> {
-    if fields.len() != 4 {
-        return Err("HELLO requires 3 fields".to_string());
+    if fields.len() != 5 {
+        return Err("HELLO requires 4 fields".to_string());
     }
 
     Ok(PeerMessage::Hello {
         node_id: unescape(fields[1])?,
         height: parse_field(fields[2], "height")?,
         head: Digest::from_hex(fields[3])?,
+        listen_addr: parse_field(fields[4], "listen_addr")?,
     })
 }
 
@@ -376,6 +387,7 @@ mod tests {
             node_id: "node|one".to_string(),
             height: 2,
             head: Digest::from_bytes([1; 32]),
+            listen_addr: "127.0.0.1:9333".parse().expect("valid addr"),
         };
 
         let encoded = encode_message(&message);

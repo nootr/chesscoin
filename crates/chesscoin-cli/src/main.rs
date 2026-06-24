@@ -146,7 +146,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} peer_rejections={} head={}",
+                "status               height={} mined={} known={} accepted={} rejected={} reorgs={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} peer_rejections={} peers={} head={}",
                 snapshot.height,
                 snapshot.mined_blocks,
                 snapshot.known_blocks,
@@ -159,6 +159,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
                 snapshot.outbound_blocks,
                 snapshot.failed_broadcasts,
                 snapshot.peer_rejections,
+                snapshot.known_peers.len(),
                 snapshot.head
             );
         }
@@ -180,6 +181,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("outbound blocks      {}", snapshot.outbound_blocks);
     println!("failed broadcasts    {}", snapshot.failed_broadcasts);
     println!("peer rejections      {}", snapshot.peer_rejections);
+    println!("known peers          {}", snapshot.known_peers.len());
     println!("head                 {}", snapshot.head);
 
     Ok(())

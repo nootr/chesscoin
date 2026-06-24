@@ -102,6 +102,7 @@ fn two_cli_nodes_exchange_a_mined_block() {
 
     assert!(stdout_a.contains("final height         1"), "{stdout_a}");
     assert!(stdout_a.contains("accepted blocks      1"), "{stdout_a}");
+    assert!(stdout_a.contains("known peers          1"), "{stdout_a}");
 }
 
 #[test]
@@ -229,7 +230,7 @@ fn node_command_reads_config_file() {
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
         stdout.contains(
-            "network              id=chesscoin-local protocol=2 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
+            "network              id=chesscoin-local protocol=3 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
         ),
         "{stdout}"
     );
