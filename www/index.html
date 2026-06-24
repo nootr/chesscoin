@@ -670,6 +670,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Bounded inbound connection handling with dropped-connection counters.</li>
                 <li>Shutdown joins active inbound handlers before releasing node state.</li>
                 <li>Header response screening before full-block sync.</li>
+                <li>Full-block sync responses matched against screened header hashes.</li>
                 <li>Best-branch tracking with known block, reorg, and peer rejection counters plus bounded header-first block-locator catch-up.</li>
               </ul>
             </div>
