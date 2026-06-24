@@ -21,6 +21,7 @@ use crate::wire::{
 
 const STORAGE_RECORD_VERSION: &str = "CCBLK1";
 const STORAGE_HEADER_VERSION: &str = "CCCFG1";
+const MIN_MAX_MESSAGE_BYTES: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -216,6 +217,7 @@ impl Drop for StorageLock {
 }
 
 pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
+    validate_node_config(&config)?;
     config.network.wire.chain_fingerprint = chain_fingerprint(&config.chain);
     let listener = TcpListener::bind(config.listen_addr)
         .map_err(|error| format!("failed to bind {}: {error}", config.listen_addr))?;
@@ -307,6 +309,65 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
     Ok(node)
 }
 
+pub fn validate_node_config(config: &NodeConfig) -> Result<(), String> {
+    if config.node_id.trim().is_empty() {
+        return Err("node_id must not be empty".to_string());
+    }
+    config
+        .chain
+        .validate()
+        .map_err(|error| format!("invalid chain config: {error}"))?;
+    if config.network.wire.network_id.trim().is_empty() {
+        return Err("network_id must not be empty".to_string());
+    }
+    if config.network.wire.protocol_version == 0 {
+        return Err("protocol_version must be greater than zero".to_string());
+    }
+    if config.network.max_message_bytes < MIN_MAX_MESSAGE_BYTES {
+        return Err(format!(
+            "max_message_bytes must be at least {MIN_MAX_MESSAGE_BYTES}"
+        ));
+    }
+    if config.network.max_peers == 0 {
+        return Err("max_peers must be greater than zero".to_string());
+    }
+    if config.network.connect_timeout.is_zero() {
+        return Err("connect_timeout must be greater than zero".to_string());
+    }
+    if config.network.read_timeout.is_zero() {
+        return Err("read_timeout must be greater than zero".to_string());
+    }
+    if config.sync.enabled {
+        if config.sync.interval.is_zero() {
+            return Err("sync interval must be greater than zero".to_string());
+        }
+        if config.sync.max_blocks_per_response == 0 {
+            return Err("sync max_blocks_per_response must be greater than zero".to_string());
+        }
+        if config.sync.max_locator_hashes == 0 {
+            return Err("sync max_locator_hashes must be greater than zero".to_string());
+        }
+    }
+    if let Some(miner) = config.miner.as_ref() {
+        validate_miner_config(miner)?;
+    }
+    if let Some(storage) = config.storage.as_ref() {
+        if storage.data_dir.as_os_str().is_empty() {
+            return Err("storage data_dir must not be empty".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_miner_config(config: &MinerConfig) -> Result<(), String> {
+    if config.interval.is_zero() {
+        return Err("miner interval must be greater than zero".to_string());
+    }
+
+    Ok(())
+}
+
 fn node_loop(
     listener: TcpListener,
     state: Arc<Mutex<NodeState>>,
@@ -335,8 +396,13 @@ fn node_loop(
                     }
                 }
                 NodeCommand::StartMining(config) => {
-                    miner = Some(config);
-                    next_mine_at = Instant::now();
+                    if validate_miner_config(&config).is_ok() {
+                        miner = Some(config);
+                        next_mine_at = Instant::now();
+                    } else {
+                        let mut guard = state.lock().expect("node state lock poisoned");
+                        guard.malformed_messages += 1;
+                    }
                 }
                 NodeCommand::StopMining => {
                     miner = None;
@@ -1410,6 +1476,7 @@ pub fn block_id(block: &chesscoin_core::domain::Block) -> Digest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chesscoin_core::application::MAX_DIGEST_ZERO_BITS;
     use std::fs;
 
     fn wait_for_height(node: &RunningNode, height: u64) -> NodeSnapshot {
@@ -1570,6 +1637,42 @@ mod tests {
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.peers, vec![peer_a]);
         assert_eq!(guard.peer_rejections, 2);
+    }
+
+    #[test]
+    fn start_node_rejects_invalid_config_before_runtime_starts() {
+        let mut config = NodeConfig::localhost_ephemeral("bad-difficulty");
+        config.chain.difficulty_zero_bits = MAX_DIGEST_ZERO_BITS + 1;
+        let error = start_node_error(config);
+        assert!(error.contains("difficulty_zero_bits"), "{error}");
+
+        let mut config = NodeConfig::localhost_ephemeral("bad-message-limit");
+        config.network.max_message_bytes = MIN_MAX_MESSAGE_BYTES - 1;
+        let error = start_node_error(config);
+        assert!(error.contains("max_message_bytes"), "{error}");
+
+        let mut config = NodeConfig::localhost_ephemeral("bad-sync-limit");
+        config.sync.max_blocks_per_response = 0;
+        let error = start_node_error(config);
+        assert!(error.contains("max_blocks_per_response"), "{error}");
+    }
+
+    #[test]
+    fn start_mining_rejects_zero_interval_command() {
+        let mut config = NodeConfig::localhost_ephemeral("bad-miner-command");
+        config.chain = small_chain_config();
+        let node = start_node(config).expect("node starts");
+
+        node.send(NodeCommand::StartMining(MinerConfig {
+            interval: Duration::ZERO,
+        }))
+        .expect("start mining command sends");
+        let snapshot = wait_for_malformed(&node, 1);
+
+        assert_eq!(snapshot.malformed_messages, 1);
+        assert_eq!(snapshot.mined_blocks, 0);
+
+        node.stop();
     }
 
     #[test]
@@ -2329,10 +2432,11 @@ mod tests {
     #[test]
     fn oversized_peer_message_is_counted_and_rejected_before_decode() {
         let mut config = NodeConfig::localhost_ephemeral("oversized");
-        config.network.max_message_bytes = 8;
+        config.network.max_message_bytes = MIN_MAX_MESSAGE_BYTES;
         let node = start_node(config).expect("node starts");
         let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
-        stream.write_all(b"BLOCK_TOO_LARGE\n").expect("write");
+        let payload = vec![b'X'; MIN_MAX_MESSAGE_BYTES + 1];
+        stream.write_all(&payload).expect("write");
         stream.flush().expect("flush");
         drop(stream);
 
@@ -2413,5 +2517,15 @@ mod tests {
                 .expect("time")
                 .as_nanos()
         ))
+    }
+
+    fn start_node_error(config: NodeConfig) -> String {
+        match start_node(config) {
+            Ok(node) => {
+                node.stop();
+                panic!("node should reject invalid config");
+            }
+            Err(error) => error,
+        }
     }
 }

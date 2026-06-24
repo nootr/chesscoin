@@ -645,6 +645,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li><code>--max-peers N</code> caps the retained peer set.</li>
                 <li><code>--sync-locator-hashes N</code> bounds block-locator catch-up requests.</li>
               </ul>
+              <p>Startup rejects empty network ids, zero training or verification counts, sample counts above the step count, unmineable toy difficulty above 256 bits, zero timeouts, and message limits below 128 bytes.</p>
             </div>
             <div class="operator-card">
               <h3>Protocol Checks</h3>

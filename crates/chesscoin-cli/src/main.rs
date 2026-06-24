@@ -10,7 +10,8 @@ use chesscoin_core::application::{ChainConfig, ProtocolSimulator, SimulationRequ
 use chesscoin_core::domain::VerificationOutcome;
 use chesscoin_node::adapters::{DeterministicSampler, ToyHash};
 use chesscoin_node::runtime::{
-    start_node, MinerConfig, NetworkConfig, NodeCommand, NodeConfig, StorageConfig, SyncConfig,
+    start_node, validate_node_config, MinerConfig, NetworkConfig, NodeCommand, NodeConfig,
+    StorageConfig, SyncConfig,
 };
 use chesscoin_node::wire::chain_fingerprint;
 
@@ -52,6 +53,7 @@ fn run() -> Result<(), String> {
 
 fn run_simulate(args: &[String]) -> Result<(), String> {
     let request = parse_simulation_request(args)?;
+    validate_simulation_request(&request)?;
     if request
         .tamper_step
         .is_some_and(|index| index >= request.steps)
@@ -222,6 +224,20 @@ fn parse_simulation_request(args: &[String]) -> Result<SimulationRequest, String
     Ok(request)
 }
 
+fn validate_simulation_request(request: &SimulationRequest) -> Result<(), String> {
+    if request.steps == 0 {
+        return Err("--steps must be greater than zero".to_string());
+    }
+    if request.samples == 0 {
+        return Err("--samples must be greater than zero".to_string());
+    }
+    if request.samples > request.steps {
+        return Err("--samples must be less than or equal to --steps".to_string());
+    }
+
+    Ok(())
+}
+
 struct NodeRequest {
     config: NodeConfig,
     mine_once: bool,
@@ -375,15 +391,7 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
         index += 1;
     }
 
-    if request.config.chain.samples_per_block > request.config.chain.steps_per_block {
-        return Err("--samples must be less than or equal to --steps".to_string());
-    }
-    if request.config.network.max_peers == 0 {
-        return Err("--max-peers must be greater than zero".to_string());
-    }
-    if request.config.sync.max_locator_hashes == 0 {
-        return Err("--sync-locator-hashes must be greater than zero".to_string());
-    }
+    validate_node_config(&request.config)?;
     request.chain_fingerprint = chain_fingerprint(&request.config.chain);
     request.config.network.wire.chain_fingerprint = request.chain_fingerprint.clone();
 

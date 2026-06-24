@@ -21,6 +21,21 @@ fn simulate_command_accepts_honest_trace() {
 }
 
 #[test]
+fn simulate_command_rejects_zero_samples() {
+    let output = Command::new(chesscoin_bin())
+        .args(["simulate", "--steps", "4", "--samples", "0"])
+        .output()
+        .expect("simulate command runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--samples must be greater than zero"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn node_command_mines_one_block() {
     let output = Command::new(chesscoin_bin())
         .args([
@@ -45,6 +60,31 @@ fn node_command_mines_one_block() {
     assert!(stdout.contains("ChessCoin node v0.1"));
     assert!(stdout.contains("final height         1"));
     assert!(stdout.contains("known blocks         1"));
+}
+
+#[test]
+fn node_command_rejects_unmineable_difficulty() {
+    let output = Command::new(chesscoin_bin())
+        .args([
+            "node",
+            "--listen",
+            "127.0.0.1:0",
+            "--mine-once",
+            "--run-ms",
+            "200",
+            "--difficulty",
+            "257",
+            "--steps",
+            "4",
+            "--samples",
+            "4",
+        ])
+        .output()
+        .expect("node command runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("difficulty_zero_bits"), "{stderr}");
 }
 
 #[test]

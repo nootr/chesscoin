@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use crate::domain::{
     Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace,
     VerificationOutcome, VerificationSample,
 };
 use crate::ports::{HashPort, SamplingPort};
+
+pub const MAX_DIGEST_ZERO_BITS: u32 = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimulationRequest {
@@ -177,6 +179,58 @@ pub struct ChainConfig {
     pub steps_per_block: usize,
     pub samples_per_block: usize,
     pub difficulty_zero_bits: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChainConfigError {
+    StepsPerBlockZero,
+    SamplesPerBlockZero,
+    SamplesExceedSteps { samples: usize, steps: usize },
+    DifficultyExceedsDigestBits { difficulty: u32, max: u32 },
+}
+
+impl fmt::Display for ChainConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StepsPerBlockZero => write!(f, "steps_per_block must be greater than zero"),
+            Self::SamplesPerBlockZero => write!(f, "samples_per_block must be greater than zero"),
+            Self::SamplesExceedSteps { samples, steps } => write!(
+                f,
+                "samples_per_block ({samples}) must be less than or equal to steps_per_block ({steps})"
+            ),
+            Self::DifficultyExceedsDigestBits { difficulty, max } => write!(
+                f,
+                "difficulty_zero_bits ({difficulty}) cannot exceed digest width ({max})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChainConfigError {}
+
+impl ChainConfig {
+    pub fn validate(&self) -> Result<(), ChainConfigError> {
+        if self.steps_per_block == 0 {
+            return Err(ChainConfigError::StepsPerBlockZero);
+        }
+        if self.samples_per_block == 0 {
+            return Err(ChainConfigError::SamplesPerBlockZero);
+        }
+        if self.samples_per_block > self.steps_per_block {
+            return Err(ChainConfigError::SamplesExceedSteps {
+                samples: self.samples_per_block,
+                steps: self.steps_per_block,
+            });
+        }
+        if self.difficulty_zero_bits > MAX_DIGEST_ZERO_BITS {
+            return Err(ChainConfigError::DifficultyExceedsDigestBits {
+                difficulty: self.difficulty_zero_bits,
+                max: MAX_DIGEST_ZERO_BITS,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for ChainConfig {
@@ -796,6 +850,52 @@ mod tests {
         assert_eq!(first.sampled_indices, second.sampled_indices);
         assert_eq!(first.outcome, VerificationOutcome::Accepted);
         assert_eq!(second.outcome, VerificationOutcome::Accepted);
+    }
+
+    #[test]
+    fn chain_config_rejects_zero_or_impossible_values() {
+        assert_eq!(
+            ChainConfig {
+                steps_per_block: 0,
+                samples_per_block: 1,
+                difficulty_zero_bits: 0,
+            }
+            .validate(),
+            Err(ChainConfigError::StepsPerBlockZero)
+        );
+        assert_eq!(
+            ChainConfig {
+                steps_per_block: 4,
+                samples_per_block: 0,
+                difficulty_zero_bits: 0,
+            }
+            .validate(),
+            Err(ChainConfigError::SamplesPerBlockZero)
+        );
+        assert_eq!(
+            ChainConfig {
+                steps_per_block: 4,
+                samples_per_block: 5,
+                difficulty_zero_bits: 0,
+            }
+            .validate(),
+            Err(ChainConfigError::SamplesExceedSteps {
+                samples: 5,
+                steps: 4,
+            })
+        );
+        assert_eq!(
+            ChainConfig {
+                steps_per_block: 4,
+                samples_per_block: 4,
+                difficulty_zero_bits: MAX_DIGEST_ZERO_BITS + 1,
+            }
+            .validate(),
+            Err(ChainConfigError::DifficultyExceedsDigestBits {
+                difficulty: MAX_DIGEST_ZERO_BITS + 1,
+                max: MAX_DIGEST_ZERO_BITS,
+            })
+        );
     }
 
     #[test]
