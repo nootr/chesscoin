@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ChessCoin Whitepaper | Proof-of-Training Chess Chain</title>
-    <meta name="description" content="ChessCoin is a proof-of-training crypto protocol where network work verifies deterministic chess AI training.">
+    <title>ChessCoin | Node v0.1 and Proof-of-Training Whitepaper</title>
+    <meta name="description" content="ChessCoin is an experimental proof-of-training blockchain research project with a local Rust node v0.1 for deterministic chess AI training traces.">
     <meta name="author" content="Joris Hartog">
     <meta name="creator" content="Joris Hartog">
     <meta name="application-name" content="ChessCoin">
     <meta name="theme-color" content="#111317">
-    <meta property="og:title" content="ChessCoin Whitepaper">
-    <meta property="og:description" content="A verifiable computation blockchain where mining improves a global chess AI.">
+    <meta property="og:title" content="ChessCoin Node v0.1">
+    <meta property="og:description" content="A Rust research node for deterministic proof-of-training chess AI traces over a local P2P network.">
     <meta property="og:type" content="website">
     <meta property="og:image" content="https://cc.jhx.app/assets/chesscoin-hero.png">
     <meta property="article:author" content="Joris Hartog">
@@ -192,6 +192,150 @@
         margin-top: 3rem;
         border: 1px solid var(--line);
         background: var(--line);
+      }
+
+      .mvp-band {
+        border-top: 1px solid rgba(24, 26, 29, 0.12);
+        border-bottom: 1px solid rgba(24, 26, 29, 0.12);
+        background: #ffffff;
+      }
+
+      .mvp-inner {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 3rem 1.25rem;
+      }
+
+      .mvp-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 2rem;
+        align-items: start;
+      }
+
+      .mvp-grid h2 {
+        margin: 0 0 0.75rem;
+        color: var(--paper-ink);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: clamp(1.6rem, 3vw, 2.35rem);
+        line-height: 1.15;
+      }
+
+      .mvp-grid p {
+        margin: 0 0 1rem;
+        color: rgba(24, 26, 29, 0.72);
+      }
+
+      .command-box {
+        overflow-x: auto;
+        padding: 1rem;
+        border: 1px solid rgba(24, 26, 29, 0.18);
+        background: #111317;
+        color: #f4f0e8;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.88rem;
+        line-height: 1.6;
+      }
+
+      .mvp-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: rgba(24, 26, 29, 0.78);
+      }
+
+      .mvp-list li {
+        margin-bottom: 0.45rem;
+      }
+
+      .operator-band {
+        border-bottom: 1px solid rgba(24, 26, 29, 0.12);
+        background: #f7f2e8;
+      }
+
+      .operator-inner {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 3.5rem 1.25rem;
+      }
+
+      .operator-header {
+        max-width: 760px;
+        margin-bottom: 1.75rem;
+      }
+
+      .operator-header h2 {
+        margin: 0 0 0.75rem;
+        color: var(--paper-ink);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: clamp(1.75rem, 3vw, 2.5rem);
+        line-height: 1.15;
+      }
+
+      .operator-header p {
+        margin: 0;
+        color: rgba(24, 26, 29, 0.72);
+      }
+
+      .operator-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+      }
+
+      .operator-grid + .operator-grid {
+        margin-top: 1rem;
+      }
+
+      .operator-card {
+        min-width: 0;
+        padding: 1rem;
+        border: 1px solid rgba(24, 26, 29, 0.16);
+        background: rgba(255, 255, 255, 0.62);
+      }
+
+      .operator-card h3 {
+        margin: 0 0 0.55rem;
+        color: var(--paper-ink);
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 1rem;
+        line-height: 1.25;
+      }
+
+      .operator-card p {
+        margin: 0 0 0.75rem;
+        color: rgba(24, 26, 29, 0.72);
+        font-size: 0.95rem;
+      }
+
+      .operator-card ul {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: rgba(24, 26, 29, 0.76);
+        font-size: 0.93rem;
+      }
+
+      .operator-card li {
+        margin-bottom: 0.35rem;
+      }
+
+      .operator-command {
+        overflow-x: auto;
+        margin-top: 0.75rem;
+        padding: 0.85rem;
+        border: 1px solid rgba(24, 26, 29, 0.16);
+        background: #111317;
+        color: #f4f0e8;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.82rem;
+        line-height: 1.55;
+      }
+
+      .release-link {
+        display: inline-flex;
+        margin-top: 0.75rem;
+        color: #0d5c75;
+        font-weight: 800;
+        text-decoration-color: rgba(13, 92, 117, 0.35);
       }
 
       .stat {
@@ -383,6 +527,14 @@
           grid-template-columns: 1fr;
         }
 
+        .mvp-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .operator-grid {
+          grid-template-columns: 1fr;
+        }
+
         .toc {
           columns: 1;
         }
@@ -405,14 +557,16 @@
       <div class="hero-inner">
         <div class="kicker">Proof-of-Training Chess Chain</div>
         <div class="hero-title">ChessCoin</div>
-        <p class="subtitle">A verifiable computation blockchain where mining work trains a shared chess AI under deterministic rules, sampled verification, and economic penalties for invalid traces.</p>
+        <p class="subtitle">A verifiable computation blockchain research project where mining work trains a shared chess AI under deterministic rules, sampled verification, and economic penalties for invalid traces.</p>
         <div class="hero-actions">
+          <a class="button primary" href="#node-v01">Node v0.1</a>
+          <a class="button" href="#operators">Operators</a>
           <a class="button primary" href="#toc">Whitepaper</a>
         </div>
         <div class="stats" aria-label="Protocol pillars">
           <div class="stat">
-            <strong>RandomX PoW</strong>
-            <span>CPU-oriented Sybil resistance</span>
+            <strong>Node v0.1</strong>
+            <span>Local TCP P2P research node</span>
           </div>
           <div class="stat">
             <strong>PoT</strong>
@@ -427,6 +581,85 @@
     </header>
 
     <main id="whitepaper">
+      <section id="node-v01" class="mvp-band">
+        <div class="mvp-inner">
+          <div class="mvp-grid">
+            <div>
+              <h2>Rust Node v0.1</h2>
+              <p>ChessCoin now has a working local MVP node. It can mine toy proof-of-work blocks, attach deterministic chess training traces, validate sampled transitions, accept or reject incoming blocks, and gossip accepted blocks to TCP peers.</p>
+              <ul class="mvp-list">
+                <li>Strict hexagonal architecture: protocol core is isolated from TCP, wire encoding, and CLI delivery.</li>
+                <li>Domain tests cover deterministic traces, commitment binding, block validation, and rejection cases.</li>
+                <li>End-to-end tests cover two local nodes sharing a mined block over TCP.</li>
+              </ul>
+            </div>
+            <div class="command-box" aria-label="Node command examples">
+cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --run-ms 1000
+
+cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="operators" class="operator-band">
+        <div class="operator-inner">
+          <div class="operator-header">
+            <h2>Node Operator Guide</h2>
+            <p>Node v0.1 is for local research networks and early protocol testing. It ships as a single <code>chesscoin</code> CLI binary and can run as a listener, a mining test node, or a peer connected to another local node.</p>
+          </div>
+          <div class="operator-grid">
+            <div class="operator-card">
+              <h3>1. Download</h3>
+              <p>Tagged releases publish binaries for macOS, Linux, and Windows. Pick the archive for your platform and verify it with the published checksum file.</p>
+              <ul>
+                <li>macOS: <code>chesscoin-*-macos-x86_64.tar.gz</code></li>
+                <li>Linux: <code>chesscoin-*-linux-x86_64.tar.gz</code></li>
+                <li>Windows: <code>chesscoin-*-windows-x86_64.zip</code></li>
+              </ul>
+              <a class="release-link" href="https://github.com/nootr/chesscoin/releases">GitHub Releases</a>
+            </div>
+            <div class="operator-card">
+              <h3>2. Start A Node</h3>
+              <p>Run a listener on localhost. Use <code>--run-ms 0</code> for a long-running process, or a finite value for smoke tests and demos.</p>
+              <div class="operator-command">./chesscoin node --listen 127.0.0.1:9333 --run-ms 0</div>
+            </div>
+            <div class="operator-card">
+              <h3>3. Connect A Peer</h3>
+              <p>Start a second node with a peer address. Add <code>--mine</code> to create one v0.1 block and gossip it to the peer.</p>
+              <div class="operator-command">./chesscoin node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333 --mine</div>
+            </div>
+          </div>
+          <div class="operator-grid">
+            <div class="operator-card">
+              <h3>Operational Flags</h3>
+              <ul>
+                <li><code>--node-id ID</code> sets a local label.</li>
+                <li><code>--listen ADDR</code> binds a TCP listener.</li>
+                <li><code>--peer ADDR</code> adds a peer; repeat as needed.</li>
+                <li><code>--difficulty N</code> controls toy proof-of-work leading zero bits.</li>
+              </ul>
+            </div>
+            <div class="operator-card">
+              <h3>Protocol Checks</h3>
+              <ul>
+                <li>Height and previous block hash.</li>
+                <li>Model-state transition metadata.</li>
+                <li>Trace commitment root and commitment chain.</li>
+                <li>Sampled deterministic training transitions.</li>
+              </ul>
+            </div>
+            <div class="operator-card">
+              <h3>Research Limits</h3>
+              <ul>
+                <li>No wallet, token, persistence, or chain sync yet.</li>
+                <li>RandomX is not integrated in v0.1.</li>
+                <li>The current hash and PoW are toy adapters.</li>
+                <li>Use isolated test networks only.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
       <article id="toc" class="whitepaper-document">
         <h1 class="paper-title">ChessCoin: Proof-of-Training Chess Chain</h1>
         <p class="paper-subtitle">A RandomX Proof-of-Work blockchain for deterministic, verifiable chess model training</p>

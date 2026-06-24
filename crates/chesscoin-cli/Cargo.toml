@@ -1,0 +1,14 @@
+[package]
+name = "chesscoin-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "chesscoin"
+path = "src/main.rs"
+
+[dependencies]
+chesscoin-core = { path = "../chesscoin-core" }
+chesscoin-node = { path = "../chesscoin-node" }

@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/chesscoin-core",
+  "crates/chesscoin-node",
+  "crates/chesscoin-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.86"

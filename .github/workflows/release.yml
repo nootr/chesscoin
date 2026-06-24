@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+            archive: chesscoin-${{ github.ref_name }}-linux-x86_64.tar.gz
+            binary: chesscoin
+          - platform: macos-x86_64
+            os: macos-13
+            archive: chesscoin-${{ github.ref_name }}-macos-x86_64.tar.gz
+            binary: chesscoin
+          - platform: windows-x86_64
+            os: windows-latest
+            archive: chesscoin-${{ github.ref_name }}-windows-x86_64.zip
+            binary: chesscoin.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked -p chesscoin-cli
+
+      - name: Stage Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/chesscoin-${GITHUB_REF_NAME}"
+          cp "target/release/${{ matrix.binary }}" "dist/chesscoin-${GITHUB_REF_NAME}/"
+          cp README.md "dist/chesscoin-${GITHUB_REF_NAME}/"
+          cp -R docs "dist/chesscoin-${GITHUB_REF_NAME}/docs"
+          tar -czf "dist/${{ matrix.archive }}" -C dist "chesscoin-${GITHUB_REF_NAME}"
+
+      - name: Stage Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "dist/chesscoin-$env:GITHUB_REF_NAME" | Out-Null
+          Copy-Item "target/release/${{ matrix.binary }}" "dist/chesscoin-$env:GITHUB_REF_NAME/"
+          Copy-Item "README.md" "dist/chesscoin-$env:GITHUB_REF_NAME/"
+          Copy-Item "docs" "dist/chesscoin-$env:GITHUB_REF_NAME/docs" -Recurse
+          Compress-Archive -Path "dist/chesscoin-$env:GITHUB_REF_NAME" -DestinationPath "dist/${{ matrix.archive }}"
+
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "ChessCoin ${GITHUB_REF_NAME}" \
+            --notes "ChessCoin node v0.1 research release. Download the archive for your operating system and verify it with SHA256SUMS.txt."
