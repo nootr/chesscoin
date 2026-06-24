@@ -31,6 +31,10 @@ pub enum PeerMessage {
         from_height: u64,
         limit: usize,
     },
+    GetBlocksByLocator {
+        locator: Vec<Digest>,
+        limit: usize,
+    },
     Block(Box<Block>),
     EndBlocks,
 }
@@ -77,6 +81,14 @@ pub fn encode_message(message: &PeerMessage) -> String {
         PeerMessage::GetBlocks { from_height, limit } => {
             format!("GET_BLOCKS|{from_height}|{limit}")
         }
+        PeerMessage::GetBlocksByLocator { locator, limit } => {
+            let locator = locator
+                .iter()
+                .map(Digest::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("GET_BLOCKS_LOCATOR|{locator}|{limit}")
+        }
         PeerMessage::Block(block) => encode_block(block),
         PeerMessage::EndBlocks => "END_BLOCKS".to_string(),
     }
@@ -91,6 +103,7 @@ pub fn decode_block_message(line: &str) -> Result<Block, String> {
         PeerMessage::Block(block) => Ok(*block),
         PeerMessage::Hello { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::GetBlocks { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::GetBlocksByLocator { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::EndBlocks => Err("expected BLOCK message".to_string()),
     }
 }
@@ -101,6 +114,7 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
     match fields.first().copied() {
         Some("HELLO") => decode_hello(&fields),
         Some("GET_BLOCKS") => decode_get_blocks(&fields),
+        Some("GET_BLOCKS_LOCATOR") => decode_get_blocks_locator(&fields),
         Some("BLOCK") => decode_block(&fields),
         Some("END_BLOCKS") => {
             if fields.len() == 1 {
@@ -112,6 +126,26 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
         Some(other) => Err(format!("unknown message type '{other}'")),
         None => Err("empty message".to_string()),
     }
+}
+
+fn decode_get_blocks_locator(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 3 {
+        return Err("GET_BLOCKS_LOCATOR requires 2 fields".to_string());
+    }
+
+    let locator = if fields[1].is_empty() {
+        Vec::new()
+    } else {
+        fields[1]
+            .split(',')
+            .map(Digest::from_hex)
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    Ok(PeerMessage::GetBlocksByLocator {
+        locator,
+        limit: parse_field(fields[2], "limit")?,
+    })
 }
 
 fn decode_get_blocks(fields: &[&str]) -> Result<PeerMessage, String> {
@@ -344,6 +378,19 @@ mod tests {
 
         let encoded = encode_message(&message);
         let decoded = decode_message(&encoded).expect("valid get blocks");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn get_blocks_locator_round_trips() {
+        let message = PeerMessage::GetBlocksByLocator {
+            locator: vec![Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32])],
+            limit: 128,
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid get blocks locator");
 
         assert_eq!(decoded, message);
     }

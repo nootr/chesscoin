@@ -148,8 +148,12 @@ fn late_cli_node_syncs_existing_block_from_peer() {
         .output()
         .expect("node b runs");
 
-    assert!(output_b.status.success());
     let stdout_b = String::from_utf8_lossy(&output_b.stdout);
+    let stderr_b = String::from_utf8_lossy(&output_b.stderr);
+    assert!(
+        output_b.status.success(),
+        "stdout:\n{stdout_b}\nstderr:\n{stderr_b}"
+    );
     assert!(stdout_b.contains("final height         1"), "{stdout_b}");
     assert!(stdout_b.contains("synced blocks        1"), "{stdout_b}");
 
@@ -206,7 +210,7 @@ fn node_command_reads_config_file() {
     ));
     std::fs::write(
         &config_path,
-        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\n",
+        "listen=127.0.0.1:0\nrun_ms=200\ndifficulty=0\nsteps=4\nsamples=4\nmine_once=true\nmax_message_bytes=4096\nsync_locator_hashes=16\n",
     )
     .expect("write config");
 

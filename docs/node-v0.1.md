@@ -26,6 +26,7 @@ mine_interval_ms=5000
 difficulty=8
 max_message_bytes=1048576
 sync_interval_ms=5000
+sync_locator_hashes=32
 ```
 
 Run it with:
@@ -63,6 +64,8 @@ Useful options:
                   Delay between peer catch-up requests
 --sync-max-blocks N
                   Maximum blocks returned by a sync response
+--sync-locator-hashes N
+                  Maximum best-chain hashes sent in a sync locator
 --no-sync         Disable peer catch-up requests
 --seed N          Training seed for --mine-once
 --entropy N       Sampling entropy for --mine-once
@@ -80,7 +83,7 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, and `reorgs`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head.
+Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, and `reorgs`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. Peer catch-up uses a bounded best-chain block locator so a peer can resume after the first common block instead of trusting equal heights.
 
 ## Verification
 

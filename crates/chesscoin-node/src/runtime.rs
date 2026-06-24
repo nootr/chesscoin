@@ -60,6 +60,7 @@ pub struct SyncConfig {
     pub enabled: bool,
     pub interval: Duration,
     pub max_blocks_per_response: usize,
+    pub max_locator_hashes: usize,
 }
 
 impl Default for SyncConfig {
@@ -68,6 +69,7 @@ impl Default for SyncConfig {
             enabled: true,
             interval: Duration::from_secs(5),
             max_blocks_per_response: 128,
+            max_locator_hashes: 32,
         }
     }
 }
@@ -361,6 +363,9 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
         Ok(PeerMessage::GetBlocks { from_height, limit }) => {
             serve_blocks(stream, state, from_height, limit);
         }
+        Ok(PeerMessage::GetBlocksByLocator { locator, limit }) => {
+            serve_blocks_by_locator(stream, state, &locator, limit);
+        }
         Ok(PeerMessage::Block(block)) => {
             let block = *block;
             let application = {
@@ -407,6 +412,35 @@ fn serve_blocks(
             .cloned()
             .collect::<Vec<_>>();
         (blocks, guard.network.clone())
+    };
+
+    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    for block in blocks {
+        let line =
+            encode_network_message(&network.wire, &PeerMessage::Block(Box::new(block))) + "\n";
+        if stream.write_all(line.as_bytes()).is_err() {
+            return;
+        }
+    }
+    let _ = stream.write_all(
+        (encode_network_message(&network.wire, &PeerMessage::EndBlocks) + "\n").as_bytes(),
+    );
+    let _ = stream.flush();
+}
+
+fn serve_blocks_by_locator(
+    mut stream: TcpStream,
+    state: &Arc<Mutex<NodeState>>,
+    locator: &[Digest],
+    requested_limit: usize,
+) {
+    let (blocks, network) = {
+        let guard = state.lock().expect("node state lock poisoned");
+        let limit = requested_limit.min(guard.sync.max_blocks_per_response);
+        (
+            blocks_after_locator(&guard.chain, locator, limit),
+            guard.network.clone(),
+        )
     };
 
     let _ = stream.set_write_timeout(Some(network.connect_timeout));
@@ -505,11 +539,11 @@ fn apply_incoming_block(
 }
 
 fn sync_once(state: &Arc<Mutex<NodeState>>) {
-    let (peers, from_height, network, limit) = {
+    let (peers, locator, network, limit) = {
         let guard = state.lock().expect("node state lock poisoned");
         (
             guard.peers.clone(),
-            guard.chain.height(),
+            block_locator(&guard.chain, guard.sync.max_locator_hashes),
             guard.network.clone(),
             guard.sync.max_blocks_per_response,
         )
@@ -520,7 +554,7 @@ fn sync_once(state: &Arc<Mutex<NodeState>>) {
     }
 
     for peer in peers {
-        if sync_from_peer(state, peer, from_height, limit, &network).is_err() {
+        if sync_from_peer(state, peer, locator.clone(), limit, &network).is_err() {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.failed_syncs += 1;
         }
@@ -530,7 +564,7 @@ fn sync_once(state: &Arc<Mutex<NodeState>>) {
 fn sync_from_peer(
     state: &Arc<Mutex<NodeState>>,
     peer: SocketAddr,
-    from_height: u64,
+    locator: Vec<Digest>,
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<(), ()> {
@@ -540,7 +574,7 @@ fn sync_from_peer(
         .map_err(|_| ())?;
     let request = encode_network_message(
         &network.wire,
-        &PeerMessage::GetBlocks { from_height, limit },
+        &PeerMessage::GetBlocksByLocator { locator, limit },
     ) + "\n";
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
     stream.flush().map_err(|_| ())?;
@@ -640,6 +674,61 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         failed_syncs: guard.failed_syncs,
         known_peers: guard.peers.clone(),
     }
+}
+
+fn block_locator(chain: &ChainState, max_hashes: usize) -> Vec<Digest> {
+    if max_hashes == 0 {
+        return Vec::new();
+    }
+
+    let hasher = ToyHash;
+    let mut hashes = chain
+        .blocks()
+        .iter()
+        .rev()
+        .take(max_hashes)
+        .map(|block| block_hash(&hasher, block))
+        .collect::<Vec<_>>();
+
+    if hashes.len() < max_hashes && !chain.blocks().is_empty() {
+        hashes.push(Digest::zero());
+    }
+
+    hashes
+}
+
+fn blocks_after_locator(
+    chain: &ChainState,
+    locator: &[Digest],
+    limit: usize,
+) -> Vec<chesscoin_core::domain::Block> {
+    let hasher = ToyHash;
+    let chain_hashes = chain
+        .blocks()
+        .iter()
+        .map(|block| block_hash(&hasher, block))
+        .collect::<Vec<_>>();
+    let start = locator
+        .iter()
+        .find_map(|hash| {
+            if *hash == Digest::zero() {
+                Some(0)
+            } else {
+                chain_hashes
+                    .iter()
+                    .position(|candidate| candidate == hash)
+                    .map(|index| index + 1)
+            }
+        })
+        .unwrap_or(0);
+
+    chain
+        .blocks()
+        .iter()
+        .skip(start)
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 fn activate_best_chain(guard: &mut NodeState) -> Result<bool, String> {
@@ -813,17 +902,6 @@ mod tests {
         node.snapshot()
     }
 
-    fn wait_for_rejections(node: &RunningNode, rejected: usize) -> NodeSnapshot {
-        for _ in 0..250 {
-            let snapshot = node.snapshot();
-            if snapshot.rejected_blocks >= rejected {
-                return snapshot;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        node.snapshot()
-    }
-
     fn wait_for_oversized(node: &RunningNode, oversized: usize) -> NodeSnapshot {
         for _ in 0..250 {
             let snapshot = node.snapshot();
@@ -835,8 +913,19 @@ mod tests {
         node.snapshot()
     }
 
+    fn wait_for_malformed(node: &RunningNode, malformed: usize) -> NodeSnapshot {
+        for _ in 0..250 {
+            let snapshot = node.snapshot();
+            if snapshot.malformed_messages >= malformed {
+                return snapshot;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        node.snapshot()
+    }
+
     fn wait_for_incompatible(node: &RunningNode, incompatible: usize) -> NodeSnapshot {
-        for _ in 0..100 {
+        for _ in 0..250 {
             let snapshot = node.snapshot();
             if snapshot.incompatible_messages >= incompatible {
                 return snapshot;
@@ -897,6 +986,58 @@ mod tests {
         let branch_a2 = branch_a_chain.mine_next_block(&hasher, &sampler, 7, 8);
 
         vec![block0, branch_b1, branch_a1, branch_a2]
+    }
+
+    #[test]
+    fn block_locator_lists_best_chain_hashes_from_tip_to_genesis() {
+        let blocks = competing_branch_blocks();
+        let mut state = test_state(small_chain_config(), None);
+        for block in [blocks[0].clone(), blocks[2].clone(), blocks[3].clone()] {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        let locator = block_locator(&state.chain, 8);
+
+        assert_eq!(locator[0], block_id(&blocks[3]));
+        assert_eq!(locator[1], block_id(&blocks[2]));
+        assert_eq!(locator[2], block_id(&blocks[0]));
+        assert_eq!(locator[3], Digest::zero());
+    }
+
+    #[test]
+    fn blocks_after_locator_returns_blocks_after_first_common_hash() {
+        let blocks = competing_branch_blocks();
+        let mut state = test_state(small_chain_config(), None);
+        for block in blocks.clone() {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        let locator = vec![block_id(&blocks[1]), block_id(&blocks[0])];
+        let response = blocks_after_locator(&state.chain, &locator, 10);
+
+        assert_eq!(response, vec![blocks[2].clone(), blocks[3].clone()]);
+    }
+
+    #[test]
+    fn blocks_after_unknown_locator_starts_from_genesis() {
+        let blocks = competing_branch_blocks();
+        let mut state = test_state(small_chain_config(), None);
+        for block in blocks.iter().take(2).cloned() {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        let response = blocks_after_locator(&state.chain, &[Digest::from_bytes([9; 32])], 1);
+
+        assert_eq!(response, vec![blocks[0].clone()]);
     }
 
     #[test]
@@ -1097,7 +1238,7 @@ mod tests {
         stream.write_all(b"NOT_A_MESSAGE\n").expect("write");
         stream.flush().expect("flush");
 
-        let snapshot = wait_for_rejections(&node, 1);
+        let snapshot = wait_for_malformed(&node, 1);
 
         assert_eq!(snapshot.rejected_blocks, 1);
         assert_eq!(snapshot.malformed_messages, 1);

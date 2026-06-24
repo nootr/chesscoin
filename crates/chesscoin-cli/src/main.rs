@@ -323,6 +323,10 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
                 request.config.sync.max_blocks_per_response =
                     parse_next(&args, &mut index, "--sync-max-blocks")?;
             }
+            "--sync-locator-hashes" => {
+                request.config.sync.max_locator_hashes =
+                    parse_next(&args, &mut index, "--sync-locator-hashes")?;
+            }
             "--no-sync" => {
                 request.config.sync.enabled = false;
             }
@@ -354,6 +358,9 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
 
     if request.config.chain.samples_per_block > request.config.chain.steps_per_block {
         return Err("--samples must be less than or equal to --steps".to_string());
+    }
+    if request.config.sync.max_locator_hashes == 0 {
+        return Err("--sync-locator-hashes must be greater than zero".to_string());
     }
 
     Ok(request)
@@ -455,7 +462,7 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--sync-interval-ms N]
+  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--sync-interval-ms N] [--sync-locator-hashes N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026
