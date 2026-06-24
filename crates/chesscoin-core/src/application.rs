@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::domain::{
     Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace,
     VerificationOutcome, VerificationSample,
@@ -210,6 +212,33 @@ pub enum BlockValidationError {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForkChoiceError {
+    UnknownParent { previous_block: Digest },
+    InvalidBlock(BlockValidationError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParentContext {
+    pub height: u64,
+    pub hash: Digest,
+    pub model: ModelState,
+}
+
+impl ParentContext {
+    pub fn genesis() -> Self {
+        Self {
+            height: 0,
+            hash: Digest::zero(),
+            model: ModelState::genesis(),
+        }
+    }
+
+    pub fn next_height(&self) -> u64 {
+        self.height
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ChainState {
     config: ChainConfig,
@@ -303,93 +332,12 @@ impl ChainState {
         H: HashPort,
         S: SamplingPort,
     {
-        if block.header.height != self.height() {
-            return Err(BlockValidationError::WrongHeight {
-                expected: self.height(),
-                actual: block.header.height,
-            });
-        }
-
-        if block.header.previous_block != self.head_hash(hasher) {
-            return Err(BlockValidationError::WrongPreviousBlock);
-        }
-
-        if block.header.model_before != self.current_model()
-            || block.trace.initial_model != block.header.model_before
-        {
-            return Err(BlockValidationError::WrongModelBefore);
-        }
-
-        if block.trace.candidate_model != block.header.model_after {
-            return Err(BlockValidationError::WrongModelAfter);
-        }
-
-        if block.trace.entries.len() != self.config.steps_per_block {
-            return Err(BlockValidationError::WrongTraceLength {
-                expected: self.config.steps_per_block,
-                actual: block.trace.entries.len(),
-            });
-        }
-
-        if block.trace.root != block.header.trace_root {
-            return Err(BlockValidationError::WrongTraceRoot);
-        }
-
-        self.validate_commitment_chain(hasher, block)?;
-
-        let actual_work = block_hash(hasher, block).leading_zero_bits();
-        if actual_work < self.config.difficulty_zero_bits {
-            return Err(BlockValidationError::InsufficientWork {
-                required_zero_bits: self.config.difficulty_zero_bits,
-                actual_zero_bits: actual_work,
-            });
-        }
-
-        let simulator = ProtocolSimulator::new(hasher, sampler);
-        let sampled_indices = sampler.sample_indices(
-            block.trace.entries.len(),
-            block.header.sample_count,
-            block.trace.root,
-            block.header.sampling_entropy,
-        );
-
-        for index in sampled_indices {
-            let Some(entry) = block.trace.entries.get(index) else {
-                return Err(BlockValidationError::InvalidSample { index });
-            };
-            let sample = simulator.verify_sample(block.header.training_seed, index, entry, entry);
-            if !sample.accepted() {
-                return Err(BlockValidationError::InvalidSample { index });
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_commitment_chain<H: HashPort>(
-        &self,
-        hasher: &H,
-        block: &Block,
-    ) -> Result<(), BlockValidationError> {
-        let simulator = ProtocolSimulator::new(hasher, DeterministicNoopSampler);
-        let mut previous_commitment = Digest::zero();
-
-        for entry in &block.trace.entries {
-            if entry.previous_commitment != previous_commitment {
-                return Err(BlockValidationError::WrongTraceRoot);
-            }
-            let expected_commitment = simulator.commit_step(previous_commitment, &entry.step);
-            if entry.commitment != expected_commitment {
-                return Err(BlockValidationError::WrongTraceRoot);
-            }
-            previous_commitment = entry.commitment;
-        }
-
-        if previous_commitment != block.trace.root {
-            return Err(BlockValidationError::WrongTraceRoot);
-        }
-
-        Ok(())
+        let parent = ParentContext {
+            height: self.height(),
+            hash: self.head_hash(hasher),
+            model: self.current_model(),
+        };
+        validate_block_after(&self.config, hasher, sampler, &parent, block)
     }
 
     pub fn apply_block<H, S>(
@@ -409,10 +357,258 @@ impl ChainState {
     }
 }
 
+pub fn validate_block_after<H, S>(
+    config: &ChainConfig,
+    hasher: &H,
+    sampler: &S,
+    parent: &ParentContext,
+    block: &Block,
+) -> Result<(), BlockValidationError>
+where
+    H: HashPort,
+    S: SamplingPort,
+{
+    if block.header.height != parent.next_height() {
+        return Err(BlockValidationError::WrongHeight {
+            expected: parent.next_height(),
+            actual: block.header.height,
+        });
+    }
+
+    if block.header.previous_block != parent.hash {
+        return Err(BlockValidationError::WrongPreviousBlock);
+    }
+
+    if block.header.model_before != parent.model
+        || block.trace.initial_model != block.header.model_before
+    {
+        return Err(BlockValidationError::WrongModelBefore);
+    }
+
+    if block.trace.candidate_model != block.header.model_after {
+        return Err(BlockValidationError::WrongModelAfter);
+    }
+
+    if block.trace.entries.len() != config.steps_per_block {
+        return Err(BlockValidationError::WrongTraceLength {
+            expected: config.steps_per_block,
+            actual: block.trace.entries.len(),
+        });
+    }
+
+    if block.trace.root != block.header.trace_root {
+        return Err(BlockValidationError::WrongTraceRoot);
+    }
+
+    validate_commitment_chain(hasher, block)?;
+
+    let actual_work = block_hash(hasher, block).leading_zero_bits();
+    if actual_work < config.difficulty_zero_bits {
+        return Err(BlockValidationError::InsufficientWork {
+            required_zero_bits: config.difficulty_zero_bits,
+            actual_zero_bits: actual_work,
+        });
+    }
+
+    let simulator = ProtocolSimulator::new(hasher, sampler);
+    let sampled_indices = sampler.sample_indices(
+        block.trace.entries.len(),
+        block.header.sample_count,
+        block.trace.root,
+        block.header.sampling_entropy,
+    );
+
+    for index in sampled_indices {
+        let Some(entry) = block.trace.entries.get(index) else {
+            return Err(BlockValidationError::InvalidSample { index });
+        };
+        let sample = simulator.verify_sample(block.header.training_seed, index, entry, entry);
+        if !sample.accepted() {
+            return Err(BlockValidationError::InvalidSample { index });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_commitment_chain<H: HashPort>(
+    hasher: &H,
+    block: &Block,
+) -> Result<(), BlockValidationError> {
+    let simulator = ProtocolSimulator::new(hasher, DeterministicNoopSampler);
+    let mut previous_commitment = Digest::zero();
+
+    for entry in &block.trace.entries {
+        if entry.previous_commitment != previous_commitment {
+            return Err(BlockValidationError::WrongTraceRoot);
+        }
+        let expected_commitment = simulator.commit_step(previous_commitment, &entry.step);
+        if entry.commitment != expected_commitment {
+            return Err(BlockValidationError::WrongTraceRoot);
+        }
+        previous_commitment = entry.commitment;
+    }
+
+    if previous_commitment != block.trace.root {
+        return Err(BlockValidationError::WrongTraceRoot);
+    }
+
+    Ok(())
+}
+
 pub fn block_hash<H: HashPort>(hasher: &H, block: &Block) -> Digest {
     let mut bytes = block.header.encode();
     bytes.extend_from_slice(block.trace.root.as_bytes());
     hasher.digest(&bytes)
+}
+
+#[derive(Clone, Debug)]
+pub struct ForkChoiceState {
+    config: ChainConfig,
+    nodes: HashMap<Digest, ForkNode>,
+    best_tip: Option<Digest>,
+}
+
+#[derive(Clone, Debug)]
+struct ForkNode {
+    hash: Digest,
+    parent: Digest,
+    block: Block,
+    next_height: u64,
+    work_score: u128,
+}
+
+impl ForkChoiceState {
+    pub fn new(config: ChainConfig) -> Self {
+        Self {
+            config,
+            nodes: HashMap::new(),
+            best_tip: None,
+        }
+    }
+
+    pub const fn config(&self) -> &ChainConfig {
+        &self.config
+    }
+
+    pub fn best_height(&self) -> u64 {
+        self.best_tip
+            .and_then(|hash| self.nodes.get(&hash).map(|node| node.next_height))
+            .unwrap_or(0)
+    }
+
+    pub fn best_hash(&self) -> Digest {
+        self.best_tip.unwrap_or_else(Digest::zero)
+    }
+
+    pub fn best_model(&self) -> ModelState {
+        self.best_tip
+            .and_then(|hash| {
+                self.nodes
+                    .get(&hash)
+                    .map(|node| node.block.header.model_after.clone())
+            })
+            .unwrap_or_else(ModelState::genesis)
+    }
+
+    pub fn best_chain(&self) -> Vec<Block> {
+        let mut chain = Vec::new();
+        let mut cursor = self.best_tip;
+
+        while let Some(hash) = cursor {
+            let Some(node) = self.nodes.get(&hash) else {
+                break;
+            };
+            chain.push(node.block.clone());
+            cursor = if node.parent == Digest::zero() {
+                None
+            } else {
+                Some(node.parent)
+            };
+        }
+
+        chain.reverse();
+        chain
+    }
+
+    pub fn insert_block<H, S>(
+        &mut self,
+        hasher: &H,
+        sampler: &S,
+        block: Block,
+    ) -> Result<Digest, ForkChoiceError>
+    where
+        H: HashPort,
+        S: SamplingPort,
+    {
+        let hash = block_hash(hasher, &block);
+        if self.nodes.contains_key(&hash) {
+            return Ok(hash);
+        }
+
+        let (parent_context, parent_score) = if block.header.previous_block == Digest::zero() {
+            (ParentContext::genesis(), 0)
+        } else {
+            let Some(parent) = self.nodes.get(&block.header.previous_block) else {
+                return Err(ForkChoiceError::UnknownParent {
+                    previous_block: block.header.previous_block,
+                });
+            };
+            (
+                ParentContext {
+                    height: parent.next_height,
+                    hash: parent.hash,
+                    model: parent.block.header.model_after.clone(),
+                },
+                parent.work_score,
+            )
+        };
+
+        validate_block_after(&self.config, hasher, sampler, &parent_context, &block)
+            .map_err(ForkChoiceError::InvalidBlock)?;
+
+        let next_height = block.header.height + 1;
+        let work_score =
+            parent_score + configured_block_work_score(self.config.difficulty_zero_bits);
+        let node = ForkNode {
+            hash,
+            parent: block.header.previous_block,
+            block,
+            next_height,
+            work_score,
+        };
+        self.nodes.insert(hash, node);
+        self.maybe_update_best(hash);
+        Ok(hash)
+    }
+
+    fn maybe_update_best(&mut self, candidate_hash: Digest) {
+        let Some(candidate) = self.nodes.get(&candidate_hash) else {
+            return;
+        };
+
+        let should_update = match self.best_tip.and_then(|hash| self.nodes.get(&hash)) {
+            None => true,
+            Some(best) => is_better_tip(candidate, best),
+        };
+
+        if should_update {
+            self.best_tip = Some(candidate_hash);
+        }
+    }
+}
+
+fn is_better_tip(candidate: &ForkNode, best: &ForkNode) -> bool {
+    candidate
+        .work_score
+        .cmp(&best.work_score)
+        .then_with(|| candidate.next_height.cmp(&best.next_height))
+        .then_with(|| candidate.hash.as_bytes().cmp(best.hash.as_bytes()))
+        .is_gt()
+}
+
+fn configured_block_work_score(difficulty_zero_bits: u32) -> u128 {
+    1_u128 << difficulty_zero_bits.min(120)
 }
 
 #[derive(Clone, Copy)]
@@ -662,5 +858,69 @@ mod tests {
 
         assert!(!sample.accepted());
         assert!(!sample.commitment_ok);
+    }
+
+    #[test]
+    fn fork_choice_rejects_unknown_parent() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        });
+        let mut block = chain.mine_next_block(&hasher, &sampler, 11, 22);
+        block.header.previous_block = Digest::from_bytes([8; 32]);
+        let mut fork_choice = ForkChoiceState::new(chain.config().clone());
+
+        assert_eq!(
+            fork_choice.insert_block(&hasher, &sampler, block),
+            Err(ForkChoiceError::UnknownParent {
+                previous_block: Digest::from_bytes([8; 32])
+            })
+        );
+    }
+
+    #[test]
+    fn fork_choice_accepts_competing_branches_and_selects_extended_tip() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let config = ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        };
+        let mut base_chain = ChainState::new(config.clone());
+        let block0 = base_chain.mine_next_block(&hasher, &sampler, 1, 2);
+        base_chain
+            .apply_block(&hasher, &sampler, block0.clone())
+            .expect("block0 applies");
+
+        let branch_a1 = base_chain.mine_next_block(&hasher, &sampler, 3, 4);
+        let branch_b1 = base_chain.mine_next_block(&hasher, &sampler, 5, 6);
+        let mut branch_a_chain = base_chain.clone();
+        branch_a_chain
+            .apply_block(&hasher, &sampler, branch_a1.clone())
+            .expect("branch a1 applies");
+        let branch_a2 = branch_a_chain.mine_next_block(&hasher, &sampler, 7, 8);
+        let branch_a2_hash = block_hash(&hasher, &branch_a2);
+
+        let mut fork_choice = ForkChoiceState::new(config);
+        fork_choice
+            .insert_block(&hasher, &sampler, block0)
+            .expect("block0 inserts");
+        fork_choice
+            .insert_block(&hasher, &sampler, branch_b1)
+            .expect("branch b inserts");
+        fork_choice
+            .insert_block(&hasher, &sampler, branch_a1)
+            .expect("branch a1 inserts");
+        fork_choice
+            .insert_block(&hasher, &sampler, branch_a2)
+            .expect("branch a2 inserts");
+
+        assert_eq!(fork_choice.best_height(), 3);
+        assert_eq!(fork_choice.best_hash(), branch_a2_hash);
+        assert_eq!(fork_choice.best_chain().len(), 3);
     }
 }

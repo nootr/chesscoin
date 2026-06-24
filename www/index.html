@@ -594,7 +594,7 @@
               </ul>
             </div>
             <div class="command-box" aria-label="Node command examples">
-cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --run-ms 1000
+cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --data-dir .chesscoin
 
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             </div>
@@ -620,12 +620,12 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             </div>
             <div class="operator-card">
               <h3>2. Start A Node</h3>
-              <p>Run a listener on localhost. Use <code>--run-ms 0</code> for a long-running process, or a finite value for smoke tests and demos.</p>
-              <div class="operator-command">./chesscoin node --listen 127.0.0.1:9333 --run-ms 0</div>
+              <p>Run a listener on localhost. Add <code>--data-dir</code> to reload accepted blocks after restart, or use <code>--config</code> for stable operator settings.</p>
+              <div class="operator-command">./chesscoin node --config node.conf</div>
             </div>
             <div class="operator-card">
               <h3>3. Connect A Peer</h3>
-              <p>Start a second node with a peer address. Add <code>--mine</code> to create one v0.1 block and gossip it to the peer.</p>
+              <p>Start a second node with a peer address. Add <code>--mine</code> for continuous mining, or <code>--mine-once</code> for a smoke test.</p>
               <div class="operator-command">./chesscoin node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333 --mine</div>
             </div>
           </div>
@@ -636,7 +636,11 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li><code>--node-id ID</code> sets a local label.</li>
                 <li><code>--listen ADDR</code> binds a TCP listener.</li>
                 <li><code>--peer ADDR</code> adds a peer; repeat as needed.</li>
+                <li><code>--network-id ID</code> separates local networks.</li>
                 <li><code>--difficulty N</code> controls toy proof-of-work leading zero bits.</li>
+                <li><code>--mine-interval-ms N</code> controls continuous mining cadence.</li>
+                <li><code>--data-dir PATH</code> enables append-only block-log persistence.</li>
+                <li><code>--max-message-bytes N</code> bounds inbound peer messages.</li>
               </ul>
             </div>
             <div class="operator-card">
@@ -651,7 +655,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             <div class="operator-card">
               <h3>Research Limits</h3>
               <ul>
-                <li>No wallet, token, persistence, or chain sync yet.</li>
+                <li>No wallet, token, robust database, or fork-aware chain sync yet.</li>
                 <li>RandomX is not integrated in v0.1.</li>
                 <li>The current hash and PoW are toy adapters.</li>
                 <li>Use isolated test networks only.</li>

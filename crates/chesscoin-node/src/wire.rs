@@ -2,6 +2,24 @@ use chesscoin_core::domain::{
     Block, BlockHeader, Digest, ModelState, TraceEntry, TrainingStep, TrainingTrace, MODEL_WIDTH,
 };
 
+pub const WIRE_MAGIC: &str = "CHESSCOIN";
+pub const PROTOCOL_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireConfig {
+    pub network_id: String,
+    pub protocol_version: u16,
+}
+
+impl Default for WireConfig {
+    fn default() -> Self {
+        Self {
+            network_id: "chesscoin-local".to_string(),
+            protocol_version: PROTOCOL_VERSION,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerMessage {
     Hello {
@@ -9,7 +27,42 @@ pub enum PeerMessage {
         height: u64,
         head: Digest,
     },
+    GetBlocks {
+        from_height: u64,
+        limit: usize,
+    },
     Block(Box<Block>),
+    EndBlocks,
+}
+
+pub fn encode_network_message(config: &WireConfig, message: &PeerMessage) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        WIRE_MAGIC,
+        config.protocol_version,
+        escape(&config.network_id),
+        encode_message(message)
+    )
+}
+
+pub fn decode_network_message(line: &str, config: &WireConfig) -> Result<PeerMessage, String> {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    let fields = trimmed.splitn(4, '|').collect::<Vec<_>>();
+    if fields.len() != 4 {
+        return Err("network message requires envelope".to_string());
+    }
+    if fields[0] != WIRE_MAGIC {
+        return Err("invalid network magic".to_string());
+    }
+    let protocol_version = parse_field::<u16>(fields[1], "protocol_version")?;
+    if protocol_version != config.protocol_version {
+        return Err("incompatible protocol version".to_string());
+    }
+    let network_id = unescape(fields[2])?;
+    if network_id != config.network_id {
+        return Err("incompatible network id".to_string());
+    }
+    decode_message(fields[3])
 }
 
 pub fn encode_message(message: &PeerMessage) -> String {
@@ -21,7 +74,24 @@ pub fn encode_message(message: &PeerMessage) -> String {
         } => {
             format!("HELLO|{}|{}|{}", escape(node_id), height, head)
         }
+        PeerMessage::GetBlocks { from_height, limit } => {
+            format!("GET_BLOCKS|{from_height}|{limit}")
+        }
         PeerMessage::Block(block) => encode_block(block),
+        PeerMessage::EndBlocks => "END_BLOCKS".to_string(),
+    }
+}
+
+pub fn encode_block_message(block: &Block) -> String {
+    encode_block(block)
+}
+
+pub fn decode_block_message(line: &str) -> Result<Block, String> {
+    match decode_message(line)? {
+        PeerMessage::Block(block) => Ok(*block),
+        PeerMessage::Hello { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::GetBlocks { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::EndBlocks => Err("expected BLOCK message".to_string()),
     }
 }
 
@@ -30,10 +100,29 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
     let fields = trimmed.split('|').collect::<Vec<_>>();
     match fields.first().copied() {
         Some("HELLO") => decode_hello(&fields),
+        Some("GET_BLOCKS") => decode_get_blocks(&fields),
         Some("BLOCK") => decode_block(&fields),
+        Some("END_BLOCKS") => {
+            if fields.len() == 1 {
+                Ok(PeerMessage::EndBlocks)
+            } else {
+                Err("END_BLOCKS requires no fields".to_string())
+            }
+        }
         Some(other) => Err(format!("unknown message type '{other}'")),
         None => Err("empty message".to_string()),
     }
+}
+
+fn decode_get_blocks(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 3 {
+        return Err("GET_BLOCKS requires 2 fields".to_string());
+    }
+
+    Ok(PeerMessage::GetBlocks {
+        from_height: parse_field(fields[1], "from_height")?,
+        limit: parse_field(fields[2], "limit")?,
+    })
 }
 
 fn decode_hello(fields: &[&str]) -> Result<PeerMessage, String> {
@@ -244,5 +333,60 @@ mod tests {
         let decoded = decode_message(&encoded).expect("valid hello");
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn get_blocks_round_trips() {
+        let message = PeerMessage::GetBlocks {
+            from_height: 12,
+            limit: 128,
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid get blocks");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn end_blocks_round_trips() {
+        let encoded = encode_message(&PeerMessage::EndBlocks);
+        let decoded = decode_message(&encoded).expect("valid end blocks");
+
+        assert_eq!(decoded, PeerMessage::EndBlocks);
+    }
+
+    #[test]
+    fn network_envelope_round_trips() {
+        let config = WireConfig::default();
+        let message = PeerMessage::GetBlocks {
+            from_height: 4,
+            limit: 9,
+        };
+
+        let encoded = encode_network_message(&config, &message);
+        let decoded = decode_network_message(&encoded, &config).expect("valid envelope");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn network_envelope_rejects_wrong_network() {
+        let encoded = encode_network_message(
+            &WireConfig {
+                network_id: "one".to_string(),
+                protocol_version: PROTOCOL_VERSION,
+            },
+            &PeerMessage::EndBlocks,
+        );
+
+        assert!(decode_network_message(
+            &encoded,
+            &WireConfig {
+                network_id: "two".to_string(),
+                protocol_version: PROTOCOL_VERSION,
+            }
+        )
+        .is_err());
     }
 }

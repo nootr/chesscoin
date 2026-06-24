@@ -1,5 +1,7 @@
 use std::env;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
@@ -7,7 +9,9 @@ use std::time::Duration;
 use chesscoin_core::application::{ChainConfig, ProtocolSimulator, SimulationRequest};
 use chesscoin_core::domain::VerificationOutcome;
 use chesscoin_node::adapters::{DeterministicSampler, ToyHash};
-use chesscoin_node::runtime::{start_node, NodeCommand, NodeConfig};
+use chesscoin_node::runtime::{
+    start_node, MinerConfig, NetworkConfig, NodeCommand, NodeConfig, StorageConfig, SyncConfig,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -111,13 +115,24 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("listening            {}", node.bound_addr());
     println!("peers                {:?}", startup.known_peers);
     println!("height               {}", startup.height);
+    println!(
+        "network              id={} protocol={} max_message_bytes={}",
+        request.network_id, request.protocol_version, request.network_max_message_bytes
+    );
 
-    if request.mine {
+    if request.mine_once {
         node.send(NodeCommand::MineOnce {
             training_seed: request.training_seed,
             sampling_entropy: request.sampling_entropy,
         })?;
         println!("mining               one block requested");
+    }
+
+    if request.mining_enabled {
+        println!(
+            "miner                continuous interval={}ms",
+            request.mining_interval.as_millis()
+        );
     }
 
     if request.run_ms == 0 {
@@ -126,8 +141,17 @@ fn run_node(args: &[String]) -> Result<(), String> {
             thread::sleep(Duration::from_secs(1));
             let snapshot = node.snapshot();
             println!(
-                "status               height={} accepted={} rejected={} head={}",
-                snapshot.height, snapshot.accepted_blocks, snapshot.rejected_blocks, snapshot.head
+                "status               height={} mined={} accepted={} rejected={} malformed={} incompatible={} oversized={} outbound={} failed_broadcasts={} head={}",
+                snapshot.height,
+                snapshot.mined_blocks,
+                snapshot.accepted_blocks,
+                snapshot.rejected_blocks,
+                snapshot.malformed_messages,
+                snapshot.incompatible_messages,
+                snapshot.oversized_messages,
+                snapshot.outbound_blocks,
+                snapshot.failed_broadcasts,
+                snapshot.head
             );
         }
     }
@@ -137,6 +161,14 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("final height         {}", snapshot.height);
     println!("accepted blocks      {}", snapshot.accepted_blocks);
     println!("rejected blocks      {}", snapshot.rejected_blocks);
+    println!("mined blocks         {}", snapshot.mined_blocks);
+    println!("synced blocks        {}", snapshot.synced_blocks);
+    println!("failed syncs         {}", snapshot.failed_syncs);
+    println!("malformed messages   {}", snapshot.malformed_messages);
+    println!("incompatible messages {}", snapshot.incompatible_messages);
+    println!("oversized messages   {}", snapshot.oversized_messages);
+    println!("outbound blocks      {}", snapshot.outbound_blocks);
+    println!("failed broadcasts    {}", snapshot.failed_broadcasts);
     println!("head                 {}", snapshot.head);
 
     Ok(())
@@ -177,22 +209,38 @@ fn parse_simulation_request(args: &[String]) -> Result<SimulationRequest, String
 
 struct NodeRequest {
     config: NodeConfig,
-    mine: bool,
+    mine_once: bool,
+    mining_enabled: bool,
+    mining_interval: Duration,
+    network_max_message_bytes: usize,
+    network_id: String,
+    protocol_version: u16,
     run_ms: u64,
     training_seed: u64,
     sampling_entropy: u64,
 }
 
 fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
+    let args = expand_config_args(args)?;
+    let network_defaults = NetworkConfig::default();
     let mut request = NodeRequest {
         config: NodeConfig {
             node_id: "chesscoin-node".to_string(),
             listen_addr: parse_socket_addr("127.0.0.1:9333")?,
             peers: Vec::new(),
             chain: ChainConfig::default(),
-            mine_on_start: false,
+            mine_once_on_start: false,
+            miner: None,
+            storage: None,
+            network: network_defaults.clone(),
+            sync: SyncConfig::default(),
         },
-        mine: false,
+        mine_once: false,
+        mining_enabled: false,
+        mining_interval: Duration::from_secs(5),
+        network_max_message_bytes: network_defaults.max_message_bytes,
+        network_id: network_defaults.wire.network_id.clone(),
+        protocol_version: network_defaults.wire.protocol_version,
         run_ms: 0,
         training_seed: 42,
         sampling_entropy: 2_026,
@@ -201,40 +249,95 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
 
     while index < args.len() {
         match args[index].as_str() {
+            "--config" => {
+                index += 1;
+            }
             "--node-id" => {
-                request.config.node_id = parse_next(args, &mut index, "--node-id")?;
+                request.config.node_id = parse_next(&args, &mut index, "--node-id")?;
             }
             "--listen" => {
                 request.config.listen_addr =
-                    parse_next::<SocketAddr>(args, &mut index, "--listen")?;
+                    parse_next::<SocketAddr>(&args, &mut index, "--listen")?;
             }
             "--peer" => {
                 request
                     .config
                     .peers
-                    .push(parse_next::<SocketAddr>(args, &mut index, "--peer")?);
+                    .push(parse_next::<SocketAddr>(&args, &mut index, "--peer")?);
             }
             "--mine" => {
-                request.mine = true;
+                request.mining_enabled = true;
+                request.config.miner = Some(MinerConfig {
+                    interval: request.mining_interval,
+                });
+            }
+            "--mine-once" => {
+                request.mine_once = true;
+            }
+            "--mine-interval-ms" => {
+                let millis = parse_next(&args, &mut index, "--mine-interval-ms")?;
+                request.mining_interval = Duration::from_millis(millis);
+                if request.mining_enabled {
+                    request.config.miner = Some(MinerConfig {
+                        interval: request.mining_interval,
+                    });
+                }
             }
             "--run-ms" => {
-                request.run_ms = parse_next(args, &mut index, "--run-ms")?;
+                request.run_ms = parse_next(&args, &mut index, "--run-ms")?;
+            }
+            "--data-dir" => {
+                let data_dir = parse_next::<PathBuf>(&args, &mut index, "--data-dir")?;
+                request.config.storage = Some(StorageConfig { data_dir });
+            }
+            "--max-message-bytes" => {
+                request.network_max_message_bytes =
+                    parse_next(&args, &mut index, "--max-message-bytes")?;
+                request.config.network.max_message_bytes = request.network_max_message_bytes;
+            }
+            "--network-id" => {
+                request.network_id = parse_next(&args, &mut index, "--network-id")?;
+                request.config.network.wire.network_id = request.network_id.clone();
+            }
+            "--protocol-version" => {
+                request.protocol_version = parse_next(&args, &mut index, "--protocol-version")?;
+                request.config.network.wire.protocol_version = request.protocol_version;
+            }
+            "--connect-timeout-ms" => {
+                let millis = parse_next(&args, &mut index, "--connect-timeout-ms")?;
+                request.config.network.connect_timeout = Duration::from_millis(millis);
+            }
+            "--read-timeout-ms" => {
+                let millis = parse_next(&args, &mut index, "--read-timeout-ms")?;
+                request.config.network.read_timeout = Duration::from_millis(millis);
+            }
+            "--sync-interval-ms" => {
+                let millis = parse_next(&args, &mut index, "--sync-interval-ms")?;
+                request.config.sync.interval = Duration::from_millis(millis);
+            }
+            "--sync-max-blocks" => {
+                request.config.sync.max_blocks_per_response =
+                    parse_next(&args, &mut index, "--sync-max-blocks")?;
+            }
+            "--no-sync" => {
+                request.config.sync.enabled = false;
             }
             "--steps" => {
-                request.config.chain.steps_per_block = parse_next(args, &mut index, "--steps")?;
+                request.config.chain.steps_per_block = parse_next(&args, &mut index, "--steps")?;
             }
             "--samples" => {
-                request.config.chain.samples_per_block = parse_next(args, &mut index, "--samples")?;
+                request.config.chain.samples_per_block =
+                    parse_next(&args, &mut index, "--samples")?;
             }
             "--difficulty" => {
                 request.config.chain.difficulty_zero_bits =
-                    parse_next(args, &mut index, "--difficulty")?;
+                    parse_next(&args, &mut index, "--difficulty")?;
             }
             "--seed" => {
-                request.training_seed = parse_next(args, &mut index, "--seed")?;
+                request.training_seed = parse_next(&args, &mut index, "--seed")?;
             }
             "--entropy" => {
-                request.sampling_entropy = parse_next(args, &mut index, "--entropy")?;
+                request.sampling_entropy = parse_next(&args, &mut index, "--entropy")?;
             }
             "-h" | "--help" => {
                 print_usage();
@@ -250,6 +353,73 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
     }
 
     Ok(request)
+}
+
+fn expand_config_args(args: &[String]) -> Result<Vec<String>, String> {
+    let mut expanded = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        if args[index] == "--config" {
+            let Some(path) = args.get(index + 1) else {
+                return Err("--config requires a value".to_string());
+            };
+            expanded.extend(read_config_args(path)?);
+            expanded.push(args[index].clone());
+            expanded.push(path.clone());
+            index += 2;
+        } else {
+            expanded.push(args[index].clone());
+            index += 1;
+        }
+    }
+
+    Ok(expanded)
+}
+
+fn read_config_args(path: &str) -> Result<Vec<String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read config {path}: {error}"))?;
+    let mut args = Vec::new();
+
+    for (line_number, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!(
+                "invalid config line {}: expected key=value",
+                line_number + 1
+            ));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            return Err(format!(
+                "invalid config line {}: empty key or value",
+                line_number + 1
+            ));
+        }
+        let flag = key.replace('_', "-");
+        if matches!(flag.as_str(), "mine" | "mine-once") {
+            match value {
+                "true" | "yes" | "1" => args.push(format!("--{flag}")),
+                "false" | "no" | "0" => {}
+                _ => {
+                    return Err(format!(
+                        "invalid config line {}: boolean flag {key} must be true or false",
+                        line_number + 1
+                    ));
+                }
+            }
+        } else {
+            args.push(format!("--{flag}"));
+            args.push(value.to_string());
+        }
+    }
+
+    Ok(args)
 }
 
 fn parse_next<T>(args: &[String], index: &mut usize, flag: &str) -> Result<T, String>
@@ -281,16 +451,17 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--listen ADDR] [--peer ADDR] [--mine] [--run-ms N]
+  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--sync-interval-ms N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026
-  node:     --listen 127.0.0.1:9333 --difficulty 8
+  node:     --listen 127.0.0.1:9333 --difficulty 8 --mine-interval-ms 5000
 
 Examples:
   cargo run -p chesscoin-cli -- simulate
   cargo run -p chesscoin-cli -- simulate --steps 8 --samples 8 --tamper-step 3
-  cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --run-ms 1000
-  cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333"
+  cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --data-dir .chesscoin
+  cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine-once --run-ms 1000
+  cargo run -p chesscoin-cli -- node --config node.conf --peer 127.0.0.1:9333"
     );
 }
