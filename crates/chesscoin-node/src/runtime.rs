@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -1046,7 +1046,11 @@ fn normalize_initial_peers(
     let mut rejected = 0;
 
     for peer in peers {
-        if peer == bound_addr || accepted.contains(&peer) || accepted.len() >= max_peers {
+        if !peer_address_is_dialable(peer)
+            || peer == bound_addr
+            || accepted.contains(&peer)
+            || accepted.len() >= max_peers
+        {
             rejected += 1;
         } else {
             accepted.push(peer);
@@ -1057,7 +1061,8 @@ fn normalize_initial_peers(
 }
 
 fn add_peer_to_state(guard: &mut NodeState, peer: SocketAddr) -> bool {
-    if peer == guard.bound_addr
+    if !peer_address_is_dialable(peer)
+        || peer == guard.bound_addr
         || guard.peers.contains(&peer)
         || guard.peers.len() >= guard.network.max_peers
     {
@@ -1066,6 +1071,19 @@ fn add_peer_to_state(guard: &mut NodeState, peer: SocketAddr) -> bool {
 
     guard.peers.push(peer);
     true
+}
+
+fn peer_address_is_dialable(peer: SocketAddr) -> bool {
+    if peer.port() == 0 {
+        return false;
+    }
+
+    match peer.ip() {
+        IpAddr::V4(addr) => {
+            !addr.is_unspecified() && !addr.is_multicast() && addr != Ipv4Addr::BROADCAST
+        }
+        IpAddr::V6(addr) => !addr.is_unspecified() && !addr.is_multicast(),
+    }
 }
 
 fn announce_to_peers(state: &Arc<Mutex<NodeState>>) {
@@ -1655,12 +1673,16 @@ mod tests {
         let peer_a = SocketAddr::from(([127, 0, 0, 1], 9334));
         let peer_b = SocketAddr::from(([127, 0, 0, 1], 9335));
         let peer_c = SocketAddr::from(([127, 0, 0, 1], 9336));
+        let invalid = SocketAddr::from(([0, 0, 0, 0], 9337));
 
-        let (peers, rejected) =
-            normalize_initial_peers(bound, vec![bound, peer_a, peer_a, peer_b, peer_c], 2);
+        let (peers, rejected) = normalize_initial_peers(
+            bound,
+            vec![bound, invalid, peer_a, peer_a, peer_b, peer_c],
+            2,
+        );
 
         assert_eq!(peers, vec![peer_a, peer_b]);
-        assert_eq!(rejected, 3);
+        assert_eq!(rejected, 4);
     }
 
     #[test]
@@ -1674,11 +1696,45 @@ mod tests {
             &mut state,
             SocketAddr::from(([127, 0, 0, 1], 0))
         ));
+        assert!(!add_peer_to_state(
+            &mut state,
+            SocketAddr::from(([0, 0, 0, 0], 9333))
+        ));
         assert_eq!(state.peers, Vec::<SocketAddr>::new());
         assert!(add_peer_to_state(&mut state, peer_a));
         assert!(!add_peer_to_state(&mut state, peer_a));
         assert!(!add_peer_to_state(&mut state, peer_b));
         assert_eq!(state.peers, vec![peer_a]);
+    }
+
+    #[test]
+    fn peer_address_validation_rejects_non_dialable_addresses() {
+        assert!(peer_address_is_dialable(SocketAddr::from((
+            [127, 0, 0, 1],
+            9333
+        ))));
+        assert!(!peer_address_is_dialable(SocketAddr::from((
+            [127, 0, 0, 1],
+            0
+        ))));
+        assert!(!peer_address_is_dialable(SocketAddr::from((
+            [0, 0, 0, 0],
+            9333
+        ))));
+        assert!(!peer_address_is_dialable(SocketAddr::from((
+            [224, 0, 0, 1],
+            9333
+        ))));
+        assert!(!peer_address_is_dialable(SocketAddr::from((
+            [255, 255, 255, 255],
+            9333
+        ))));
+        assert!(!peer_address_is_dialable(
+            "[::]:9333".parse().expect("valid addr")
+        ));
+        assert!(!peer_address_is_dialable(
+            "[ff02::1]:9333".parse().expect("valid addr")
+        ));
     }
 
     #[test]
@@ -1692,10 +1748,11 @@ mod tests {
         add_peer(&state, peer_a);
         add_peer(&state, peer_a);
         add_peer(&state, peer_b);
+        add_peer(&state, SocketAddr::from(([0, 0, 0, 0], 9336)));
 
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.peers, vec![peer_a]);
-        assert_eq!(guard.peer_rejections, 2);
+        assert_eq!(guard.peer_rejections, 3);
     }
 
     #[test]
@@ -2580,6 +2637,22 @@ mod tests {
         assert_eq!(peers_from_peer(peer, 1, &network), Err(()));
 
         handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn peer_exchange_rejects_non_dialable_advertised_peers() {
+        let mut state = test_state(small_chain_config(), None);
+        let valid_peer = SocketAddr::from(([127, 0, 0, 1], 9334));
+        let invalid_peer = SocketAddr::from(([0, 0, 0, 0], 9335));
+
+        for candidate in [valid_peer, invalid_peer] {
+            if !add_peer_to_state(&mut state, candidate) {
+                state.peer_rejections += 1;
+            }
+        }
+
+        assert_eq!(state.peers, vec![valid_peer]);
+        assert_eq!(state.peer_rejections, 1);
     }
 
     #[test]
