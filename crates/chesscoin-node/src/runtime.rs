@@ -133,6 +133,8 @@ pub struct NodeSnapshot {
     pub oversized_messages: usize,
     pub outbound_blocks: usize,
     pub failed_broadcasts: usize,
+    pub hello_announcements: usize,
+    pub failed_hello_announcements: usize,
     pub dropped_inbound_connections: usize,
     pub peer_rejections: usize,
     pub synced_blocks: usize,
@@ -203,6 +205,8 @@ struct NodeState {
     oversized_messages: usize,
     outbound_blocks: usize,
     failed_broadcasts: usize,
+    hello_announcements: usize,
+    failed_hello_announcements: usize,
     dropped_inbound_connections: usize,
     peer_rejections: usize,
     synced_blocks: usize,
@@ -286,6 +290,8 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         oversized_messages: 0,
         outbound_blocks: 0,
         failed_broadcasts: 0,
+        hello_announcements: 0,
+        failed_hello_announcements: 0,
         dropped_inbound_connections: 0,
         peer_rejections,
         synced_blocks: 0,
@@ -442,7 +448,7 @@ fn node_loop(
                 } => mine_once(&state, training_seed, sampling_entropy),
                 NodeCommand::AddPeer(peer) => {
                     if add_peer(&state, peer) {
-                        announce_to_peer(state.as_ref(), peer);
+                        announce_to_peer_and_count(&state, peer);
                     }
                 }
                 NodeCommand::StartMining(config) => {
@@ -1219,13 +1225,30 @@ fn announce_to_peers(state: &Arc<Mutex<NodeState>>) {
         let guard = state.lock().expect("node state lock poisoned");
         guard.peers.clone()
     };
+    let mut sent = 0;
+    let mut failed = 0;
 
     for peer in peers {
-        announce_to_peer(state.as_ref(), peer);
+        if announce_to_peer(state.as_ref(), peer) {
+            sent += 1;
+        } else {
+            failed += 1;
+        }
     }
+
+    record_hello_announcements(state, sent, failed);
 }
 
-fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) {
+fn announce_to_peer_and_count(state: &Arc<Mutex<NodeState>>, peer: SocketAddr) {
+    let (sent, failed) = if announce_to_peer(state.as_ref(), peer) {
+        (1, 0)
+    } else {
+        (0, 1)
+    };
+    record_hello_announcements(state, sent, failed);
+}
+
+fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) -> bool {
     let (network, message) = {
         let guard = state.lock().expect("node state lock poisoned");
         let hasher = ToyHash;
@@ -1241,12 +1264,24 @@ fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) {
     };
     let line = encode_network_message(&network.wire, &message) + "\n";
 
-    if let Ok(mut stream) = TcpStream::connect_timeout(&peer, network.connect_timeout) {
-        let _ = stream
+    match TcpStream::connect_timeout(&peer, network.connect_timeout) {
+        Ok(mut stream) => stream
             .set_write_timeout(Some(network.write_timeout))
             .and_then(|_| stream.write_all(line.as_bytes()))
-            .and_then(|_| stream.flush());
+            .and_then(|_| stream.flush())
+            .is_ok(),
+        Err(_) => false,
     }
+}
+
+fn record_hello_announcements(state: &Arc<Mutex<NodeState>>, sent: usize, failed: usize) {
+    if sent == 0 && failed == 0 {
+        return;
+    }
+
+    let mut guard = state.lock().expect("node state lock poisoned");
+    guard.hello_announcements += sent;
+    guard.failed_hello_announcements += failed;
 }
 
 fn broadcast_block(state: &Arc<Mutex<NodeState>>, block: &chesscoin_core::domain::Block) {
@@ -1308,6 +1343,8 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
         oversized_messages: guard.oversized_messages,
         outbound_blocks: guard.outbound_blocks,
         failed_broadcasts: guard.failed_broadcasts,
+        hello_announcements: guard.hello_announcements,
+        failed_hello_announcements: guard.failed_hello_announcements,
         dropped_inbound_connections: guard.dropped_inbound_connections,
         peer_rejections: guard.peer_rejections,
         synced_blocks: guard.synced_blocks,
@@ -1777,6 +1814,8 @@ mod tests {
             oversized_messages: 0,
             outbound_blocks: 0,
             failed_broadcasts: 0,
+            hello_announcements: 0,
+            failed_hello_announcements: 0,
             dropped_inbound_connections: 0,
             peer_rejections: 0,
             synced_blocks: 0,
@@ -1901,6 +1940,22 @@ mod tests {
         let guard = state.lock().expect("state lock");
         assert_eq!(guard.peers, vec![peer_a]);
         assert_eq!(guard.peer_rejections, 3);
+    }
+
+    #[test]
+    fn direct_hello_announcement_failures_are_counted() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve peer addr");
+        let peer = listener.local_addr().expect("peer addr");
+        drop(listener);
+        let mut raw_state = test_state(small_chain_config(), None);
+        raw_state.network.connect_timeout = Duration::from_millis(50);
+        let state = Arc::new(Mutex::new(raw_state));
+
+        announce_to_peer_and_count(&state, peer);
+
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.hello_announcements, 0);
+        assert_eq!(guard.failed_hello_announcements, 1);
     }
 
     #[test]
@@ -2064,9 +2119,31 @@ mod tests {
         let snapshot_a = wait_for_known_peer(&node_a, node_b.bound_addr());
 
         assert!(snapshot_a.known_peers.contains(&node_b.bound_addr()));
+        let snapshot_b = node_b.snapshot();
+        assert_eq!(snapshot_b.hello_announcements, 1);
+        assert_eq!(snapshot_b.failed_hello_announcements, 0);
 
         node_b.stop();
         node_a.stop();
+    }
+
+    #[test]
+    fn failed_startup_hello_announcements_are_counted() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve peer addr");
+        let peer = listener.local_addr().expect("peer addr");
+        drop(listener);
+
+        let mut config = NodeConfig::localhost_ephemeral("failed-hello");
+        config.chain = small_chain_config();
+        config.peers.push(peer);
+        config.network.connect_timeout = Duration::from_millis(50);
+        let node = start_node(config).expect("node starts");
+
+        let snapshot = node.snapshot();
+        assert_eq!(snapshot.hello_announcements, 0);
+        assert_eq!(snapshot.failed_hello_announcements, 1);
+
+        node.stop();
     }
 
     #[test]
