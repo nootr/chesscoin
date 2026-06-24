@@ -389,6 +389,9 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
         Ok(PeerMessage::GetBlocksByLocator { locator, limit }) => {
             serve_blocks_by_locator(stream, state, &locator, limit);
         }
+        Ok(PeerMessage::GetInventory { locator, limit }) => {
+            serve_inventory(stream, state, &locator, limit);
+        }
         Ok(PeerMessage::Block(block)) => {
             let block = *block;
             let application = {
@@ -404,6 +407,10 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.malformed_messages += 1;
         }
+        Ok(PeerMessage::Inventory { .. }) => {
+            let mut guard = state.lock().expect("node state lock poisoned");
+            guard.malformed_messages += 1;
+        }
         Err(_) => {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.rejected_blocks += 1;
@@ -414,6 +421,28 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             }
         }
     }
+}
+
+fn serve_inventory(
+    mut stream: TcpStream,
+    state: &Arc<Mutex<NodeState>>,
+    locator: &[Digest],
+    requested_limit: usize,
+) {
+    let (hashes, network) = {
+        let guard = state.lock().expect("node state lock poisoned");
+        let limit = requested_limit.min(guard.sync.max_blocks_per_response);
+        (
+            inventory_after_locator(&guard.chain, locator, limit),
+            guard.network.clone(),
+        )
+    };
+
+    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let line = encode_network_message(&network.wire, &PeerMessage::Inventory { hashes }) + "\n";
+    let _ = stream
+        .write_all(line.as_bytes())
+        .and_then(|_| stream.flush());
 }
 
 fn serve_blocks(
@@ -501,6 +530,7 @@ fn mine_once(state: &Arc<Mutex<NodeState>>, training_seed: u64, sampling_entropy
         block
     };
 
+    announce_to_peers(state);
     broadcast_block(state, &block);
 }
 
@@ -591,6 +621,55 @@ fn sync_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<(), ()> {
+    let inventory = inventory_from_peer(peer, locator.clone(), limit, network)?;
+    let has_unknown_block = {
+        let guard = state.lock().expect("node state lock poisoned");
+        inventory
+            .iter()
+            .any(|hash| !guard.fork_choice.contains_block(*hash))
+    };
+
+    if !has_unknown_block {
+        return Ok(());
+    }
+
+    blocks_from_peer(state, peer, locator, limit, network)
+}
+
+fn inventory_from_peer(
+    peer: SocketAddr,
+    locator: Vec<Digest>,
+    limit: usize,
+    network: &NetworkConfig,
+) -> Result<Vec<Digest>, ()> {
+    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
+    stream
+        .set_read_timeout(Some(network.read_timeout))
+        .map_err(|_| ())?;
+    let request =
+        encode_network_message(&network.wire, &PeerMessage::GetInventory { locator, limit }) + "\n";
+    stream.write_all(request.as_bytes()).map_err(|_| ())?;
+    stream.flush().map_err(|_| ())?;
+
+    let line = match read_limited_line_from(&mut stream, network.max_message_bytes) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Err(()),
+        Err(IncomingReadError::Oversized) | Err(IncomingReadError::Io) => return Err(()),
+    };
+
+    match decode_network_message(&line, &network.wire).map_err(|_| ())? {
+        PeerMessage::Inventory { hashes } => Ok(hashes),
+        _ => Err(()),
+    }
+}
+
+fn blocks_from_peer(
+    state: &Arc<Mutex<NodeState>>,
+    peer: SocketAddr,
+    locator: Vec<Digest>,
+    limit: usize,
+    network: &NetworkConfig,
+) -> Result<(), ()> {
     let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
     stream
         .set_read_timeout(Some(network.read_timeout))
@@ -624,6 +703,7 @@ fn sync_from_peer(
                 }
             }
             PeerMessage::EndBlocks => return Ok(()),
+            PeerMessage::Inventory { .. } => return Err(()),
             _ => return Err(()),
         }
     }
@@ -824,6 +904,14 @@ fn blocks_after_locator(
         .collect()
 }
 
+fn inventory_after_locator(chain: &ChainState, locator: &[Digest], limit: usize) -> Vec<Digest> {
+    let hasher = ToyHash;
+    blocks_after_locator(chain, locator, limit)
+        .iter()
+        .map(|block| block_hash(&hasher, block))
+        .collect()
+}
+
 fn activate_best_chain(guard: &mut NodeState) -> Result<bool, String> {
     let hasher = ToyHash;
     let old_head = guard.chain.head_hash(&hasher);
@@ -856,6 +944,7 @@ fn chain_from_blocks(
     Ok(chain)
 }
 
+#[derive(Debug)]
 enum IncomingReadError {
     Oversized,
     Io,
@@ -1310,6 +1399,23 @@ mod tests {
     }
 
     #[test]
+    fn inventory_after_locator_returns_hashes_after_first_common_hash() {
+        let blocks = competing_branch_blocks();
+        let mut state = test_state(small_chain_config(), None);
+        for block in blocks.clone() {
+            assert_eq!(
+                apply_incoming_block(&mut state, block, BlockSource::Gossip),
+                BlockApplication::Accepted
+            );
+        }
+
+        let locator = vec![block_id(&blocks[1]), block_id(&blocks[0])];
+        let response = inventory_after_locator(&state.chain, &locator, 10);
+
+        assert_eq!(response, vec![block_id(&blocks[2]), block_id(&blocks[3])]);
+    }
+
+    #[test]
     fn blocks_after_unknown_locator_starts_from_genesis() {
         let blocks = competing_branch_blocks();
         let mut state = test_state(small_chain_config(), None);
@@ -1558,6 +1664,51 @@ mod tests {
 
         node_b.stop();
         node_a.stop();
+    }
+
+    #[test]
+    fn node_serves_inventory_after_locator() {
+        let mut config = NodeConfig::localhost_ephemeral("inventory");
+        config.chain.difficulty_zero_bits = 0;
+        config.chain.steps_per_block = 4;
+        config.chain.samples_per_block = 4;
+        let node = start_node(config).expect("node starts");
+
+        node.send(NodeCommand::MineOnce {
+            training_seed: 123,
+            sampling_entropy: 456,
+        })
+        .expect("mine command sends");
+        let snapshot = wait_for_height(&node, 1);
+
+        let network = {
+            let guard = node.state.lock().expect("node state lock");
+            guard.network.clone()
+        };
+        let request = encode_network_message(
+            &network.wire,
+            &PeerMessage::GetInventory {
+                locator: vec![Digest::zero()],
+                limit: 8,
+            },
+        ) + "\n";
+        let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
+        stream.write_all(request.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+
+        let line = read_limited_line_from(&mut stream, network.max_message_bytes)
+            .expect("read inventory")
+            .expect("inventory line");
+        let response = decode_network_message(&line, &network.wire).expect("valid inventory");
+
+        assert_eq!(
+            response,
+            PeerMessage::Inventory {
+                hashes: vec![snapshot.head]
+            }
+        );
+
+        node.stop();
     }
 
     #[test]

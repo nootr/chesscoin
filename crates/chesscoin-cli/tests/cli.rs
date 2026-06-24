@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -48,6 +49,7 @@ fn node_command_mines_one_block() {
 
 #[test]
 fn two_cli_nodes_exchange_a_mined_block() {
+    let _guard = multi_node_test_guard();
     let addr_a = reserve_local_addr();
     let addr_b = reserve_local_addr();
 
@@ -107,6 +109,7 @@ fn two_cli_nodes_exchange_a_mined_block() {
 
 #[test]
 fn late_cli_node_syncs_existing_block_from_peer() {
+    let _guard = multi_node_test_guard();
     let addr_a = reserve_local_addr();
     let addr_b = reserve_local_addr();
 
@@ -230,7 +233,7 @@ fn node_command_reads_config_file() {
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
         stdout.contains(
-            "network              id=chesscoin-local protocol=3 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
+            "network              id=chesscoin-local protocol=4 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
         ),
         "{stdout}"
     );
@@ -239,4 +242,11 @@ fn node_command_reads_config_file() {
 fn reserve_local_addr() -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve local port");
     listener.local_addr().expect("local addr").to_string()
+}
+
+fn multi_node_test_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("multi-node test lock")
 }

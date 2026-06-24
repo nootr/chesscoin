@@ -6,7 +6,7 @@ use chesscoin_core::domain::{
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
@@ -47,6 +47,13 @@ pub enum PeerMessage {
     GetBlocksByLocator {
         locator: Vec<Digest>,
         limit: usize,
+    },
+    GetInventory {
+        locator: Vec<Digest>,
+        limit: usize,
+    },
+    Inventory {
+        hashes: Vec<Digest>,
     },
     Block(Box<Block>),
     EndBlocks,
@@ -114,6 +121,22 @@ pub fn encode_message(message: &PeerMessage) -> String {
                 .join(",");
             format!("GET_BLOCKS_LOCATOR|{locator}|{limit}")
         }
+        PeerMessage::GetInventory { locator, limit } => {
+            let locator = locator
+                .iter()
+                .map(Digest::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("GET_INVENTORY|{locator}|{limit}")
+        }
+        PeerMessage::Inventory { hashes } => {
+            let hashes = hashes
+                .iter()
+                .map(Digest::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("INVENTORY|{hashes}")
+        }
         PeerMessage::Block(block) => encode_block(block),
         PeerMessage::EndBlocks => "END_BLOCKS".to_string(),
     }
@@ -129,6 +152,8 @@ pub fn decode_block_message(line: &str) -> Result<Block, String> {
         PeerMessage::Hello { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::GetBlocks { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::GetBlocksByLocator { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::GetInventory { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::Inventory { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::EndBlocks => Err("expected BLOCK message".to_string()),
     }
 }
@@ -140,6 +165,8 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
         Some("HELLO") => decode_hello(&fields),
         Some("GET_BLOCKS") => decode_get_blocks(&fields),
         Some("GET_BLOCKS_LOCATOR") => decode_get_blocks_locator(&fields),
+        Some("GET_INVENTORY") => decode_get_inventory(&fields),
+        Some("INVENTORY") => decode_inventory(&fields),
         Some("BLOCK") => decode_block(&fields),
         Some("END_BLOCKS") => {
             if fields.len() == 1 {
@@ -153,23 +180,46 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
     }
 }
 
+fn decode_get_inventory(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 3 {
+        return Err("GET_INVENTORY requires 2 fields".to_string());
+    }
+
+    Ok(PeerMessage::GetInventory {
+        locator: decode_digest_list(fields[1])?,
+        limit: parse_field(fields[2], "limit")?,
+    })
+}
+
+fn decode_inventory(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 2 {
+        return Err("INVENTORY requires 1 field".to_string());
+    }
+
+    Ok(PeerMessage::Inventory {
+        hashes: decode_digest_list(fields[1])?,
+    })
+}
+
 fn decode_get_blocks_locator(fields: &[&str]) -> Result<PeerMessage, String> {
     if fields.len() != 3 {
         return Err("GET_BLOCKS_LOCATOR requires 2 fields".to_string());
     }
 
-    let locator = if fields[1].is_empty() {
+    Ok(PeerMessage::GetBlocksByLocator {
+        locator: decode_digest_list(fields[1])?,
+        limit: parse_field(fields[2], "limit")?,
+    })
+}
+
+fn decode_digest_list(input: &str) -> Result<Vec<Digest>, String> {
+    Ok(if input.is_empty() {
         Vec::new()
     } else {
-        fields[1]
+        input
             .split(',')
             .map(Digest::from_hex)
             .collect::<Result<Vec<_>, _>>()?
-    };
-
-    Ok(PeerMessage::GetBlocksByLocator {
-        locator,
-        limit: parse_field(fields[2], "limit")?,
     })
 }
 
@@ -418,6 +468,31 @@ mod tests {
 
         let encoded = encode_message(&message);
         let decoded = decode_message(&encoded).expect("valid get blocks locator");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn get_inventory_round_trips() {
+        let message = PeerMessage::GetInventory {
+            locator: vec![Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32])],
+            limit: 64,
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid get inventory");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn inventory_round_trips() {
+        let message = PeerMessage::Inventory {
+            hashes: vec![Digest::from_bytes([3; 32]), Digest::from_bytes([4; 32])],
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid inventory");
 
         assert_eq!(decoded, message);
     }
