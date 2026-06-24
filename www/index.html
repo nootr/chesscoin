@@ -586,7 +586,7 @@
           <div class="mvp-grid">
             <div>
               <h2>Rust Node v0.1</h2>
-              <p>ChessCoin now has a working local MVP node. It can mine toy proof-of-work blocks, attach deterministic chess training traces, validate sampled transitions, track valid branches with fork choice, and gossip accepted blocks to TCP peers.</p>
+              <p>ChessCoin now has a working local MVP node. It can mine toy proof-of-work blocks, attach deterministic chess training traces, validate trace continuity and sampled transitions, track valid branches with fork choice, and gossip accepted blocks to TCP peers.</p>
               <ul class="mvp-list">
                 <li>Strict hexagonal architecture: protocol core is isolated from TCP, wire encoding, and CLI delivery.</li>
                 <li>Domain tests cover deterministic traces, commitment binding, block validation, fork choice, and rejection cases.</li>
@@ -605,7 +605,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
         <div class="operator-inner">
           <div class="operator-header">
             <h2>Node Operator Guide</h2>
-            <p>Node v0.1 is for local research networks and early protocol testing. It ships as a single <code>chesscoin</code> CLI binary and can run as a listener, a mining test node, or a peer connected to another local node.</p>
+            <p>Node v0.1 is for local research networks and early protocol testing. It ships as a single <code>chesscoin</code> CLI binary and can run as a listener, a toy proof-of-work mining node, or a peer connected to another local node.</p>
           </div>
           <div class="operator-grid">
             <div class="operator-card">
@@ -652,6 +652,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Height and previous block hash.</li>
                 <li>Model-state transition metadata.</li>
                 <li>Configured sample count.</li>
+                <li>Trace-state continuity from initial model to candidate model.</li>
                 <li>Trace commitment root and commitment chain.</li>
                 <li>Sampled deterministic training transitions.</li>
                 <li>Protocol version, network id, and chain fingerprint compatibility.</li>

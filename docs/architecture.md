@@ -36,7 +36,7 @@ That separation is deliberate. Tests can exercise protocol behavior through fake
 3. The block includes a deterministic training trace and trace commitment root.
 4. The node checks toy proof-of-work difficulty over the block header.
 5. Peers receive full v0.1 blocks over TCP.
-6. Receivers validate height, previous hash, model transition metadata, configured sample count, trace root, commitment chain, proof-of-work, and sampled deterministic transitions.
+6. Receivers validate height, previous hash, model transition metadata, configured sample count, trace-state continuity, trace root, commitment chain, proof-of-work, and sampled deterministic transitions.
 7. Accepted blocks are inserted into fork choice, persisted as checksummed block-log records when storage is configured, and gossiped to known peers.
 8. Peer messages and known peers are bounded by configured limits, with malformed, oversized, incompatible, and rejected peer additions counted in node snapshots.
 9. Peer messages carry an explicit protocol version, network id, and chain fingerprint, so incompatible networks or chain parameters are rejected before block handling.

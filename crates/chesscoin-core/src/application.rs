@@ -206,6 +206,9 @@ pub enum BlockValidationError {
         expected: usize,
         actual: usize,
     },
+    WrongTraceContinuity {
+        index: usize,
+    },
     WrongTraceRoot,
     InvalidSample {
         index: usize,
@@ -412,6 +415,7 @@ where
     }
 
     validate_commitment_chain(hasher, block)?;
+    validate_trace_continuity(block)?;
 
     let actual_work = block_hash(hasher, block).leading_zero_bits();
     if actual_work < config.difficulty_zero_bits {
@@ -437,6 +441,25 @@ where
         if !sample.accepted() {
             return Err(BlockValidationError::InvalidSample { index });
         }
+    }
+
+    Ok(())
+}
+
+fn validate_trace_continuity(block: &Block) -> Result<(), BlockValidationError> {
+    let mut expected_state = block.trace.initial_model.clone();
+
+    for (index, entry) in block.trace.entries.iter().enumerate() {
+        if entry.step.state_before != expected_state {
+            return Err(BlockValidationError::WrongTraceContinuity { index });
+        }
+        expected_state = entry.step.state_after.clone();
+    }
+
+    if block.trace.candidate_model != expected_state {
+        return Err(BlockValidationError::WrongTraceContinuity {
+            index: block.trace.entries.len(),
+        });
     }
 
     Ok(())
@@ -740,6 +763,18 @@ mod tests {
         ProtocolSimulator::new(TestHash, TestSampler)
     }
 
+    fn rebind_trace_commitments(block: &mut Block) {
+        let simulator = simulator();
+        let mut previous_commitment = Digest::zero();
+        for entry in &mut block.trace.entries {
+            entry.previous_commitment = previous_commitment;
+            entry.commitment = simulator.commit_step(previous_commitment, &entry.step);
+            previous_commitment = entry.commitment;
+        }
+        block.trace.root = previous_commitment;
+        block.header.trace_root = previous_commitment;
+    }
+
     #[test]
     fn simulation_is_deterministic_for_same_inputs() {
         let request = SimulationRequest {
@@ -897,6 +932,47 @@ mod tests {
         assert_eq!(
             chain.validate_next_block(&hasher, &sampler, &block),
             Err(BlockValidationError::WrongTraceRoot)
+        );
+    }
+
+    #[test]
+    fn block_with_disconnected_trace_state_rejects() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        });
+        let mut block = chain.mine_next_block(&hasher, &sampler, 11, 22);
+        block.trace.entries[2].step.state_before = ModelState::genesis();
+        rebind_trace_commitments(&mut block);
+
+        assert_eq!(
+            chain.validate_next_block(&hasher, &sampler, &block),
+            Err(BlockValidationError::WrongTraceContinuity { index: 2 })
+        );
+    }
+
+    #[test]
+    fn block_with_candidate_model_not_matching_trace_tail_rejects() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        });
+        let mut block = chain.mine_next_block(&hasher, &sampler, 11, 22);
+        let mut weights = *block.header.model_after.weights();
+        weights[0] = weights[0].saturating_add(99);
+        let forged_model = ModelState::new(weights);
+        block.trace.candidate_model = forged_model.clone();
+        block.header.model_after = forged_model;
+
+        assert_eq!(
+            chain.validate_next_block(&hasher, &sampler, &block),
+            Err(BlockValidationError::WrongTraceContinuity { index: 4 })
         );
     }
 

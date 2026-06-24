@@ -2,7 +2,7 @@
 
 ChessCoin is an experimental protocol research project exploring deterministic proof-of-training for chess AI on top of a proof-of-work blockchain design.
 
-The repository now contains the public GitHub Pages whitepaper, a local simulator, and a v0.1 node that can mine and exchange blocks with peers over TCP. The whitepaper is published from `www/index.html`, with supporting assets in `www/assets/`.
+The repository now contains the public GitHub Pages whitepaper, a local simulator, and a v0.1 node that can mine toy proof-of-work blocks and exchange them with peers over TCP. The whitepaper is published from `www/index.html`, with supporting assets in `www/assets/`.
 
 GitHub Pages is deployed by the workflow in `.github/workflows/pages.yml`, which publishes the `www/` folder.
 
@@ -80,7 +80,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine --mine-interval-m
 
 Use `--mine-once` when you want a single block for smoke tests instead of a continuous miner.
 
-Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, configured sample count, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers. Late peers request missing best-chain blocks with a bounded block-locator message instead of a height-only cursor. Peer traffic is wrapped with protocol version, network id, and chain-fingerprint checks, inbound peer messages are bounded by configurable size and timeout limits, and the known-peer set is capped with rejected peer additions counted in node output.
+Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, configured sample count, trace-state continuity, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers. Late peers request missing best-chain blocks with a bounded block-locator message instead of a height-only cursor. Peer traffic is wrapped with protocol version, network id, and chain-fingerprint checks, inbound peer messages are bounded by configurable size and timeout limits, and the known-peer set is capped with rejected peer additions counted in node output.
 
 ## Local Simulator
 
