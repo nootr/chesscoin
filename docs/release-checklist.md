@@ -18,7 +18,7 @@ git tag -s v0.1.0 -m "ChessCoin v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow repeats the formatter, clippy, workspace test, and release-build gates before it builds Linux, macOS, and Windows archives. It publishes `SHA256SUMS.txt` and creates GitHub artifact attestations from that checksum file.
+The release workflow repeats the formatter, clippy, workspace test, and release-build gates before it builds Linux, macOS, and Windows archives. Build jobs run with read-only repository permission; only the final publish job receives release, OIDC, attestation, and artifact-metadata write permissions. It publishes `SHA256SUMS.txt` and creates GitHub artifact attestations from that checksum file.
 
 After the workflow finishes, verify one archive before announcing the release:
 

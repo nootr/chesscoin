@@ -2218,8 +2218,8 @@ mod tests {
         let mut config_b = NodeConfig::localhost_ephemeral("advertise-b");
         config_b.chain = small_chain_config();
         config_b.advertise_addr = Some(advertised);
-        config_b.peers.push(node_a.bound_addr());
         let node_b = start_node(config_b).expect("node b starts");
+        announce_to_peer_and_count(&node_b.state, node_a.bound_addr());
 
         let snapshot_a = wait_for_known_peer(&node_a, advertised);
 
