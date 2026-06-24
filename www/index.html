@@ -621,7 +621,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             </div>
             <div class="operator-card">
               <h3>2. Start A Node</h3>
-              <p>Run a listener on localhost. Add <code>--data-dir</code> to reload checksummed block-log records after restart. New logs include a chain-fingerprint header so incompatible local data fails startup clearly.</p>
+              <p>Run a listener on localhost. Add <code>--data-dir</code> to reload checksummed block-log records after restart. A local lock rejects concurrent writers, and new logs include a chain-fingerprint header so incompatible local data fails startup clearly.</p>
               <div class="operator-command">./chesscoin node --config node.conf</div>
             </div>
             <div class="operator-card">
@@ -658,6 +658,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Protocol version, network id, and chain fingerprint compatibility.</li>
                 <li>HELLO listen-address announcements for configured peers.</li>
                 <li>Persisted block-log chain fingerprint compatibility.</li>
+                <li>Data-directory locking for local block-log writers.</li>
                 <li>Storage failure counters for failed block-log appends.</li>
                 <li>Best-branch tracking with known block, reorg, and peer rejection counters plus bounded inventory-based block-locator catch-up.</li>
               </ul>

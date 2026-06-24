@@ -1,4 +1,4 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -195,9 +195,22 @@ struct NodeState {
     synced_blocks: usize,
     failed_syncs: usize,
     storage_failures: usize,
+    _storage_lock: Option<StorageLock>,
     storage_path: Option<PathBuf>,
     network: NetworkConfig,
     sync: SyncConfig,
+}
+
+#[derive(Debug)]
+struct StorageLock {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Drop for StorageLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
@@ -217,6 +230,11 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         .storage
         .as_ref()
         .map(|storage| storage.data_dir.join("blocks.log"));
+    let storage_lock = if let Some(storage) = config.storage.as_ref() {
+        Some(acquire_storage_lock(&storage.data_dir)?)
+    } else {
+        None
+    };
     let (chain, fork_choice) = if let Some(path) = storage_path.as_deref() {
         load_chains(path, config.chain.clone())?
     } else {
@@ -247,6 +265,7 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         synced_blocks: 0,
         failed_syncs: 0,
         storage_failures: 0,
+        _storage_lock: storage_lock,
         storage_path,
         network: config.network,
         sync: config.sync,
@@ -1157,6 +1176,27 @@ fn storage_record_checksum(payload: &str) -> Digest {
     ToyHash.digest(payload.as_bytes())
 }
 
+fn acquire_storage_lock(data_dir: &Path) -> Result<StorageLock, String> {
+    fs::create_dir_all(data_dir).map_err(|error| {
+        format!(
+            "failed to create chain storage directory {}: {error}",
+            data_dir.display()
+        )
+    })?;
+    let path = data_dir.join("node.lock");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "failed to lock chain storage {}: {error}; another node may be using this data-dir",
+                path.display()
+            )
+        })?;
+    Ok(StorageLock { path, _file: file })
+}
+
 fn append_block(
     path: &Path,
     config: &ChainConfig,
@@ -1293,6 +1333,7 @@ mod tests {
             synced_blocks: 0,
             failed_syncs: 0,
             storage_failures: 0,
+            _storage_lock: None,
             storage_path,
             network: NetworkConfig::default(),
             sync: SyncConfig::default(),
@@ -1829,30 +1870,49 @@ mod tests {
     }
 
     #[test]
-    fn local_mining_counts_storage_failures_without_panicking() {
-        let data_dir = unique_test_data_dir("storage-failure");
-        fs::write(&data_dir, b"not a directory").expect("write file in data-dir position");
-        let mut config = NodeConfig::localhost_ephemeral("storage-failure");
+    fn second_node_rejects_locked_data_dir_until_first_stops() {
+        let data_dir = unique_test_data_dir("storage-lock");
+        let mut config = NodeConfig::localhost_ephemeral("storage-lock-a");
         config.chain.difficulty_zero_bits = 0;
         config.chain.steps_per_block = 4;
         config.chain.samples_per_block = 4;
         config.storage = Some(StorageConfig {
             data_dir: data_dir.clone(),
         });
-        let node = start_node(config).expect("node starts");
+        let node = start_node(config.clone()).expect("first node starts");
 
-        node.send(NodeCommand::MineOnce {
-            training_seed: 77,
-            sampling_entropy: 88,
-        })
-        .expect("mine command sends");
-        let snapshot = wait_for_height(&node, 1);
-
-        assert_eq!(snapshot.height, 1);
-        assert_eq!(snapshot.mined_blocks, 1);
-        assert_eq!(snapshot.storage_failures, 1);
+        let error = match start_node(config.clone()) {
+            Ok(node) => {
+                node.stop();
+                panic!("second node should fail while lock is held");
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("failed to lock chain storage"), "{error}");
 
         node.stop();
+
+        config.node_id = "storage-lock-b".to_string();
+        let restarted = start_node(config).expect("lock is released after stop");
+        restarted.stop();
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn persist_block_counts_storage_failures_without_panicking() {
+        let data_dir = unique_test_data_dir("storage-failure");
+        fs::write(&data_dir, b"not a directory").expect("write file in data-dir position");
+        let storage_path = data_dir.join("blocks.log");
+        let mut state = test_state(small_chain_config(), Some(storage_path));
+        let block = state
+            .chain
+            .mine_next_block(&ToyHash, &DeterministicSampler, 77, 88);
+
+        persist_block(&mut state, &block);
+
+        assert_eq!(state.storage_failures, 1);
+
         let _ = fs::remove_file(data_dir);
     }
 
