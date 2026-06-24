@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chesscoin_core::application::{
     block_hash, block_header_hash, ChainConfig, ChainState, ForkChoiceState,
 };
-use chesscoin_core::domain::Digest;
+use chesscoin_core::domain::{BlockHeader, Digest};
 use chesscoin_core::ports::HashPort;
 
 use crate::adapters::{DeterministicSampler, ToyHash};
@@ -855,6 +855,7 @@ fn sync_from_peer(
     let headers = headers_from_peer(peer, locator.clone(), limit, network)?;
     let has_unknown_block = {
         let guard = state.lock().expect("node state lock poisoned");
+        validate_headers_after_locator(&guard.chain, &locator, &headers)?;
         headers
             .iter()
             .map(|header| block_header_hash(&ToyHash, header))
@@ -868,12 +869,65 @@ fn sync_from_peer(
     blocks_from_peer(state, peer, locator, limit, network)
 }
 
+fn validate_headers_after_locator(
+    chain: &ChainState,
+    locator: &[Digest],
+    headers: &[BlockHeader],
+) -> Result<(), ()> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+
+    let hasher = ToyHash;
+    let chain_hashes = chain
+        .blocks()
+        .iter()
+        .map(|block| block_hash(&hasher, block))
+        .collect::<Vec<_>>();
+    let first_parent = headers[0].previous_block;
+    let mut expected_height = if first_parent == Digest::zero() {
+        if !chain.blocks().is_empty() && !locator.contains(&Digest::zero()) {
+            return Err(());
+        }
+        0
+    } else {
+        if !locator.contains(&first_parent) {
+            return Err(());
+        }
+        let Some(parent_index) = chain_hashes.iter().position(|hash| *hash == first_parent) else {
+            return Err(());
+        };
+        parent_index as u64 + 1
+    };
+    let mut expected_previous = first_parent;
+
+    for header in headers {
+        if header.previous_block != expected_previous {
+            return Err(());
+        }
+        if header.height != expected_height {
+            return Err(());
+        }
+        if header.sample_count != chain.config().samples_per_block {
+            return Err(());
+        }
+        let hash = block_header_hash(&hasher, header);
+        if hash.leading_zero_bits() < chain.config().difficulty_zero_bits {
+            return Err(());
+        }
+        expected_previous = hash;
+        expected_height += 1;
+    }
+
+    Ok(())
+}
+
 fn headers_from_peer(
     peer: SocketAddr,
     locator: Vec<Digest>,
     limit: usize,
     network: &NetworkConfig,
-) -> Result<Vec<chesscoin_core::domain::BlockHeader>, ()> {
+) -> Result<Vec<BlockHeader>, ()> {
     let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
     stream
         .set_read_timeout(Some(network.read_timeout))
@@ -1791,6 +1845,96 @@ mod tests {
     }
 
     #[test]
+    fn header_validation_accepts_contiguous_locator_extension() {
+        let config = small_chain_config();
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let mut chain = ChainState::new(config);
+        let block0 = chain.mine_next_block(&hasher, &sampler, 1, 2);
+        chain
+            .apply_block(&hasher, &sampler, block0.clone())
+            .expect("block0 applies");
+        let block1 = chain.mine_next_block(&hasher, &sampler, 3, 4);
+        let locator = vec![block_id(&block0), Digest::zero()];
+
+        assert_eq!(
+            validate_headers_after_locator(&chain, &locator, &[block1.header]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn header_validation_rejects_disconnected_or_invalid_headers() {
+        let config = small_chain_config();
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let mut chain = ChainState::new(config);
+        let block0 = chain.mine_next_block(&hasher, &sampler, 1, 2);
+        chain
+            .apply_block(&hasher, &sampler, block0.clone())
+            .expect("block0 applies");
+        let block1 = chain.mine_next_block(&hasher, &sampler, 3, 4);
+        let locator = vec![block_id(&block0), Digest::zero()];
+
+        let mut bad_parent = block1.header.clone();
+        bad_parent.previous_block = Digest::from_bytes([9; 32]);
+        assert_eq!(
+            validate_headers_after_locator(&chain, &locator, &[bad_parent]),
+            Err(())
+        );
+
+        let mut bad_height = block1.header.clone();
+        bad_height.height += 1;
+        assert_eq!(
+            validate_headers_after_locator(&chain, &locator, &[bad_height]),
+            Err(())
+        );
+
+        let mut bad_sample_count = block1.header.clone();
+        bad_sample_count.sample_count -= 1;
+        assert_eq!(
+            validate_headers_after_locator(&chain, &locator, &[bad_sample_count]),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn header_validation_rejects_insufficient_work() {
+        let easy_config = small_chain_config();
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let easy_chain = ChainState::new(easy_config.clone());
+        let block = easy_chain.mine_next_block(&hasher, &sampler, 1, 2);
+        let actual_work = block_header_hash(&hasher, &block.header).leading_zero_bits();
+        let mut strict_config = easy_config;
+        strict_config.difficulty_zero_bits = actual_work + 1;
+        let strict_chain = ChainState::new(strict_config);
+
+        assert_eq!(
+            validate_headers_after_locator(&strict_chain, &[], &[block.header]),
+            Err(())
+        );
+    }
+
+    #[test]
+    fn header_validation_rejects_unrequested_genesis_replay() {
+        let config = small_chain_config();
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let mut chain = ChainState::new(config);
+        let block0 = chain.mine_next_block(&hasher, &sampler, 1, 2);
+        chain
+            .apply_block(&hasher, &sampler, block0.clone())
+            .expect("block0 applies");
+        let locator = vec![block_id(&block0)];
+
+        assert_eq!(
+            validate_headers_after_locator(&chain, &locator, &[block0.header]),
+            Err(())
+        );
+    }
+
+    #[test]
     fn blocks_after_unknown_locator_starts_from_genesis() {
         let blocks = competing_branch_blocks();
         let mut state = test_state(small_chain_config(), None);
@@ -2425,6 +2569,39 @@ mod tests {
         });
 
         assert_eq!(headers_from_peer(peer, Vec::new(), 1, &network), Err(()));
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn disconnected_headers_fail_sync_before_block_fetch() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let mut bad_header = competing_branch_blocks().remove(0).header;
+        bad_header.previous_block = Digest::from_bytes([9; 32]);
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept headers request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            let response = encode_network_message(
+                &response_network.wire,
+                &PeerMessage::Headers {
+                    headers: vec![bad_header],
+                },
+            ) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+        let state = Arc::new(Mutex::new(test_state(small_chain_config(), None)));
+
+        assert_eq!(
+            sync_from_peer(&state, peer, Vec::new(), 1, &network),
+            Err(())
+        );
 
         handle.join().expect("fake peer exits");
     }

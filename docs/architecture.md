@@ -42,7 +42,7 @@ That separation is deliberate. Tests can exercise protocol behavior through fake
 9. Sync first requests bounded peer advertisements from known peers, then applies the same self, duplicate, and capacity checks used by manual peer configuration.
 10. Peer messages and known peers are bounded by configured limits, with malformed, oversized, incompatible, and rejected peer additions counted in node snapshots.
 11. Peer messages carry an explicit protocol version, network id, and chain fingerprint, so incompatible networks or chain parameters are rejected before block handling.
-12. Late peers request bounded best-chain headers after a block locator, then fetch and validate missing blocks through the normal fork-choice insertion path. Oversized peer lists, locators, headers, and inventory responses are rejected before block handling.
+12. Late peers request bounded best-chain headers after a block locator, screen those headers for locator continuity, height sequence, configured sample count, and toy proof-of-work, then fetch and validate missing blocks through the normal fork-choice insertion path. Oversized peer lists, locators, headers, and inventory responses are rejected before block handling.
 13. Node startup validates chain, network, sync, storage, and miner settings before binding sockets, acquiring storage locks, or starting a miner.
 
 ## Current Research Limits
