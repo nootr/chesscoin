@@ -233,7 +233,7 @@ fn node_command_reads_config_file() {
     assert!(stdout.contains("final height         1"), "{stdout}");
     assert!(
         stdout.contains(
-            "network              id=chesscoin-local protocol=4 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
+            "network              id=chesscoin-local protocol=5 chain=steps=4;samples=4;difficulty=0 max_message_bytes=4096 max_peers=8",
         ),
         "{stdout}"
     );

@@ -6,7 +6,7 @@ use chesscoin_core::domain::{
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
@@ -54,6 +54,13 @@ pub enum PeerMessage {
     },
     Inventory {
         hashes: Vec<Digest>,
+    },
+    GetHeaders {
+        locator: Vec<Digest>,
+        limit: usize,
+    },
+    Headers {
+        headers: Vec<BlockHeader>,
     },
     Block(Box<Block>),
     EndBlocks,
@@ -137,6 +144,22 @@ pub fn encode_message(message: &PeerMessage) -> String {
                 .join(",");
             format!("INVENTORY|{hashes}")
         }
+        PeerMessage::GetHeaders { locator, limit } => {
+            let locator = locator
+                .iter()
+                .map(Digest::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("GET_HEADERS|{locator}|{limit}")
+        }
+        PeerMessage::Headers { headers } => {
+            let headers = headers
+                .iter()
+                .map(encode_header)
+                .collect::<Vec<_>>()
+                .join(";");
+            format!("HEADERS|{headers}")
+        }
         PeerMessage::Block(block) => encode_block(block),
         PeerMessage::EndBlocks => "END_BLOCKS".to_string(),
     }
@@ -154,6 +177,8 @@ pub fn decode_block_message(line: &str) -> Result<Block, String> {
         PeerMessage::GetBlocksByLocator { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::GetInventory { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::Inventory { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::GetHeaders { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::Headers { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::EndBlocks => Err("expected BLOCK message".to_string()),
     }
 }
@@ -167,6 +192,8 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
         Some("GET_BLOCKS_LOCATOR") => decode_get_blocks_locator(&fields),
         Some("GET_INVENTORY") => decode_get_inventory(&fields),
         Some("INVENTORY") => decode_inventory(&fields),
+        Some("GET_HEADERS") => decode_get_headers(&fields),
+        Some("HEADERS") => decode_headers(&fields),
         Some("BLOCK") => decode_block(&fields),
         Some("END_BLOCKS") => {
             if fields.len() == 1 {
@@ -199,6 +226,34 @@ fn decode_inventory(fields: &[&str]) -> Result<PeerMessage, String> {
     Ok(PeerMessage::Inventory {
         hashes: decode_digest_list(fields[1])?,
     })
+}
+
+fn decode_get_headers(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 3 {
+        return Err("GET_HEADERS requires 2 fields".to_string());
+    }
+
+    Ok(PeerMessage::GetHeaders {
+        locator: decode_digest_list(fields[1])?,
+        limit: parse_field(fields[2], "limit")?,
+    })
+}
+
+fn decode_headers(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 2 {
+        return Err("HEADERS requires 1 field".to_string());
+    }
+
+    let headers = if fields[1].is_empty() {
+        Vec::new()
+    } else {
+        fields[1]
+            .split(';')
+            .map(decode_header)
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    Ok(PeerMessage::Headers { headers })
 }
 
 fn decode_get_blocks_locator(fields: &[&str]) -> Result<PeerMessage, String> {
@@ -274,6 +329,40 @@ fn encode_block(block: &Block) -> String {
         entries,
     ]
     .join("|")
+}
+
+fn encode_header(header: &BlockHeader) -> String {
+    [
+        header.height.to_string(),
+        header.previous_block.to_string(),
+        encode_model(&header.model_before),
+        encode_model(&header.model_after),
+        header.trace_root.to_string(),
+        header.training_seed.to_string(),
+        header.sampling_entropy.to_string(),
+        header.sample_count.to_string(),
+        header.nonce.to_string(),
+    ]
+    .join(",")
+}
+
+fn decode_header(input: &str) -> Result<BlockHeader, String> {
+    let fields = input.split(',').collect::<Vec<_>>();
+    if fields.len() != 9 {
+        return Err("header requires 9 fields".to_string());
+    }
+
+    Ok(BlockHeader {
+        height: parse_field(fields[0], "height")?,
+        previous_block: Digest::from_hex(fields[1])?,
+        model_before: decode_model(fields[2])?,
+        model_after: decode_model(fields[3])?,
+        trace_root: Digest::from_hex(fields[4])?,
+        training_seed: parse_field(fields[5], "training_seed")?,
+        sampling_entropy: parse_field(fields[6], "sampling_entropy")?,
+        sample_count: parse_field(fields[7], "sample_count")?,
+        nonce: parse_field(fields[8], "nonce")?,
+    })
 }
 
 fn decode_block(fields: &[&str]) -> Result<PeerMessage, String> {
@@ -493,6 +582,39 @@ mod tests {
 
         let encoded = encode_message(&message);
         let decoded = decode_message(&encoded).expect("valid inventory");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn get_headers_round_trips() {
+        let message = PeerMessage::GetHeaders {
+            locator: vec![Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32])],
+            limit: 64,
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid get headers");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn headers_round_trips() {
+        let hasher = ToyHash;
+        let sampler = DeterministicSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 3,
+            samples_per_block: 2,
+            difficulty_zero_bits: 0,
+        });
+        let block = chain.mine_next_block(&hasher, &sampler, 7, 9);
+        let message = PeerMessage::Headers {
+            headers: vec![block.header],
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid headers");
 
         assert_eq!(decoded, message);
     }

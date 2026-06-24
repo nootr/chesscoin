@@ -491,8 +491,12 @@ fn validate_commitment_chain<H: HashPort>(
 }
 
 pub fn block_hash<H: HashPort>(hasher: &H, block: &Block) -> Digest {
-    let mut bytes = block.header.encode();
-    bytes.extend_from_slice(block.trace.root.as_bytes());
+    block_header_hash(hasher, &block.header)
+}
+
+pub fn block_header_hash<H: HashPort>(hasher: &H, header: &BlockHeader) -> Digest {
+    let mut bytes = header.encode();
+    bytes.extend_from_slice(header.trace_root.as_bytes());
     hasher.digest(&bytes)
 }
 
@@ -853,6 +857,23 @@ mod tests {
         assert_eq!(chain.height(), 1);
         assert_eq!(chain.head_hash(&hasher), hash);
         assert_ne!(chain.current_model(), ModelState::genesis());
+    }
+
+    #[test]
+    fn header_hash_matches_block_hash() {
+        let hasher = TestHash;
+        let sampler = TestSampler;
+        let chain = ChainState::new(ChainConfig {
+            steps_per_block: 4,
+            samples_per_block: 4,
+            difficulty_zero_bits: 0,
+        });
+        let block = chain.mine_next_block(&hasher, &sampler, 11, 22);
+
+        assert_eq!(
+            block_hash(&hasher, &block),
+            block_header_hash(&hasher, &block.header)
+        );
     }
 
     #[test]

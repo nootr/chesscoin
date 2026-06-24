@@ -7,7 +7,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chesscoin_core::application::{block_hash, ChainConfig, ChainState, ForkChoiceState};
+use chesscoin_core::application::{
+    block_hash, block_header_hash, ChainConfig, ChainState, ForkChoiceState,
+};
 use chesscoin_core::domain::Digest;
 use chesscoin_core::ports::HashPort;
 
@@ -420,6 +422,12 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             }
             serve_inventory(stream, state, &locator, limit);
         }
+        Ok(PeerMessage::GetHeaders { locator, limit }) => {
+            if !locator_is_within_limit(state, locator.len()) {
+                return;
+            }
+            serve_headers(stream, state, &locator, limit);
+        }
         Ok(PeerMessage::Block(block)) => {
             let block = *block;
             let application = {
@@ -436,6 +444,10 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             guard.malformed_messages += 1;
         }
         Ok(PeerMessage::Inventory { .. }) => {
+            let mut guard = state.lock().expect("node state lock poisoned");
+            guard.malformed_messages += 1;
+        }
+        Ok(PeerMessage::Headers { .. }) => {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.malformed_messages += 1;
         }
@@ -477,6 +489,28 @@ fn serve_inventory(
 
     let _ = stream.set_write_timeout(Some(network.connect_timeout));
     let line = encode_network_message(&network.wire, &PeerMessage::Inventory { hashes }) + "\n";
+    let _ = stream
+        .write_all(line.as_bytes())
+        .and_then(|_| stream.flush());
+}
+
+fn serve_headers(
+    mut stream: TcpStream,
+    state: &Arc<Mutex<NodeState>>,
+    locator: &[Digest],
+    requested_limit: usize,
+) {
+    let (headers, network) = {
+        let guard = state.lock().expect("node state lock poisoned");
+        let limit = requested_limit.min(guard.sync.max_blocks_per_response);
+        (
+            headers_after_locator(&guard.chain, locator, limit),
+            guard.network.clone(),
+        )
+    };
+
+    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let line = encode_network_message(&network.wire, &PeerMessage::Headers { headers }) + "\n";
     let _ = stream
         .write_all(line.as_bytes())
         .and_then(|_| stream.flush());
@@ -664,12 +698,13 @@ fn sync_from_peer(
     limit: usize,
     network: &NetworkConfig,
 ) -> Result<(), ()> {
-    let inventory = inventory_from_peer(peer, locator.clone(), limit, network)?;
+    let headers = headers_from_peer(peer, locator.clone(), limit, network)?;
     let has_unknown_block = {
         let guard = state.lock().expect("node state lock poisoned");
-        inventory
+        headers
             .iter()
-            .any(|hash| !guard.fork_choice.contains_block(*hash))
+            .map(|header| block_header_hash(&ToyHash, header))
+            .any(|hash| !guard.fork_choice.contains_block(hash))
     };
 
     if !has_unknown_block {
@@ -679,6 +714,34 @@ fn sync_from_peer(
     blocks_from_peer(state, peer, locator, limit, network)
 }
 
+fn headers_from_peer(
+    peer: SocketAddr,
+    locator: Vec<Digest>,
+    limit: usize,
+    network: &NetworkConfig,
+) -> Result<Vec<chesscoin_core::domain::BlockHeader>, ()> {
+    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
+    stream
+        .set_read_timeout(Some(network.read_timeout))
+        .map_err(|_| ())?;
+    let request =
+        encode_network_message(&network.wire, &PeerMessage::GetHeaders { locator, limit }) + "\n";
+    stream.write_all(request.as_bytes()).map_err(|_| ())?;
+    stream.flush().map_err(|_| ())?;
+
+    let line = match read_limited_line_from(&mut stream, network.max_message_bytes) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Err(()),
+        Err(IncomingReadError::Oversized) | Err(IncomingReadError::Io) => return Err(()),
+    };
+
+    match decode_network_message(&line, &network.wire).map_err(|_| ())? {
+        PeerMessage::Headers { headers } if headers.len() <= limit => Ok(headers),
+        _ => Err(()),
+    }
+}
+
+#[cfg(test)]
 fn inventory_from_peer(
     peer: SocketAddr,
     locator: Vec<Digest>,
@@ -953,6 +1016,17 @@ fn inventory_after_locator(chain: &ChainState, locator: &[Digest], limit: usize)
     blocks_after_locator(chain, locator, limit)
         .iter()
         .map(|block| block_hash(&hasher, block))
+        .collect()
+}
+
+fn headers_after_locator(
+    chain: &ChainState,
+    locator: &[Digest],
+    limit: usize,
+) -> Vec<chesscoin_core::domain::BlockHeader> {
+    blocks_after_locator(chain, locator, limit)
+        .iter()
+        .map(|block| block.header.clone())
         .collect()
 }
 
@@ -1779,6 +1853,50 @@ mod tests {
     }
 
     #[test]
+    fn node_serves_headers_after_locator() {
+        let mut config = NodeConfig::localhost_ephemeral("headers");
+        config.chain.difficulty_zero_bits = 0;
+        config.chain.steps_per_block = 4;
+        config.chain.samples_per_block = 4;
+        let node = start_node(config).expect("node starts");
+
+        node.send(NodeCommand::MineOnce {
+            training_seed: 123,
+            sampling_entropy: 456,
+        })
+        .expect("mine command sends");
+        let snapshot = wait_for_height(&node, 1);
+
+        let network = {
+            let guard = node.state.lock().expect("node state lock");
+            guard.network.clone()
+        };
+        let request = encode_network_message(
+            &network.wire,
+            &PeerMessage::GetHeaders {
+                locator: vec![Digest::zero()],
+                limit: 8,
+            },
+        ) + "\n";
+        let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
+        stream.write_all(request.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+
+        let line = read_limited_line_from(&mut stream, network.max_message_bytes)
+            .expect("read headers")
+            .expect("headers line");
+        let response = decode_network_message(&line, &network.wire).expect("valid headers");
+
+        let PeerMessage::Headers { headers } = response else {
+            panic!("expected headers response");
+        };
+        assert_eq!(headers.len(), 1);
+        assert_eq!(block_header_hash(&ToyHash, &headers[0]), snapshot.head);
+
+        node.stop();
+    }
+
+    #[test]
     fn continuous_miner_produces_multiple_blocks() {
         let mut config = NodeConfig::localhost_ephemeral("miner");
         config.chain.difficulty_zero_bits = 0;
@@ -1983,6 +2101,35 @@ mod tests {
         });
 
         assert_eq!(inventory_from_peer(peer, Vec::new(), 1, &network), Err(()));
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn headers_response_over_requested_limit_fails_sync() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let headers = competing_branch_blocks()
+            .into_iter()
+            .take(2)
+            .map(|block| block.header)
+            .collect::<Vec<_>>();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept headers request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            let response =
+                encode_network_message(&response_network.wire, &PeerMessage::Headers { headers })
+                    + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+
+        assert_eq!(headers_from_peer(peer, Vec::new(), 1, &network), Err(()));
 
         handle.join().expect("fake peer exits");
     }
