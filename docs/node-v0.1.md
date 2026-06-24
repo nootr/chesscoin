@@ -98,7 +98,7 @@ Incoming blocks must declare the configured `--samples` count. A block cannot lo
 
 Trace entries must also form a continuous model-state chain from the block's `model_before` state to its `model_after` state. This prevents a block from stitching disconnected trace fragments together and relying on sparse sampling to miss the break.
 
-When `--data-dir` is enabled, new records in `blocks.log` are versioned and checksummed. Older plain v0.1 block records still load. On restart, an incomplete final record is ignored as an interrupted append, while a completed corrupt record remains fatal and should be investigated before continuing the node.
+When `--data-dir` is enabled, new `blocks.log` files start with a checksummed chain-fingerprint header covering `steps`, `samples`, and toy proof-of-work `difficulty`. Startup fails clearly when that header does not match the configured chain parameters. Block records are also versioned and checksummed. Older plain v0.1 block records still load. On restart, an incomplete final record is ignored as an interrupted append, while a completed corrupt record remains fatal and should be investigated before continuing the node.
 
 ## Verification
 

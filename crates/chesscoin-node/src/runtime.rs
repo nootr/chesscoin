@@ -18,6 +18,7 @@ use crate::wire::{
 };
 
 const STORAGE_RECORD_VERSION: &str = "CCBLK1";
+const STORAGE_HEADER_VERSION: &str = "CCCFG1";
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -483,7 +484,7 @@ fn mine_once(state: &Arc<Mutex<NodeState>>, training_seed: u64, sampling_entropy
             .expect("locally mined block should validate");
         activate_best_chain(&mut guard).expect("locally mined chain should activate");
         if let Some(path) = guard.storage_path.as_deref() {
-            append_block(path, &block).expect("persist locally mined block");
+            append_block(path, guard.chain.config(), &block).expect("persist locally mined block");
         }
         guard.mined_blocks += 1;
         block
@@ -524,7 +525,7 @@ fn apply_incoming_block(
     {
         Ok(_) => {
             if let Some(path) = guard.storage_path.as_deref() {
-                let _ = append_block(path, &block);
+                let _ = append_block(path, guard.chain.config(), &block);
             }
             if activate_best_chain(guard).is_ok()
                 && old_head != Digest::zero()
@@ -866,14 +867,41 @@ fn load_chains(path: &Path, config: ChainConfig) -> Result<(ChainState, ForkChoi
     let lines = content.lines().collect::<Vec<_>>();
     let hasher = ToyHash;
     let sampler = DeterministicSampler;
+    let expected_fingerprint = chain_fingerprint(&config);
+    let mut seen_header = false;
+    let mut seen_block = false;
 
     for (index, line) in lines.iter().enumerate() {
         let line_number = index + 1;
         if line.trim().is_empty() {
             continue;
         }
-        let block = match decode_storage_record(line) {
-            Ok(block) => block,
+        let block = match decode_storage_line(line) {
+            Ok(StorageLine::Header(fingerprint)) => {
+                if seen_header {
+                    return Err(format!(
+                        "invalid chain storage {} line {}: duplicate storage header",
+                        path.display(),
+                        line_number
+                    ));
+                }
+                if seen_block {
+                    return Err(format!(
+                        "invalid chain storage {} line {}: storage header must precede blocks",
+                        path.display(),
+                        line_number
+                    ));
+                }
+                if fingerprint != expected_fingerprint {
+                    return Err(format!(
+                        "chain storage {} fingerprint mismatch: stored {fingerprint}, configured {expected_fingerprint}",
+                        path.display()
+                    ));
+                }
+                seen_header = true;
+                continue;
+            }
+            Ok(StorageLine::Block(block)) => *block,
             Err(_) if !has_complete_tail && line_number == lines.len() => break,
             Err(error) => {
                 return Err(format!(
@@ -892,10 +920,50 @@ fn load_chains(path: &Path, config: ChainConfig) -> Result<(ChainState, ForkChoi
                     line_number
                 )
             })?;
+        seen_block = true;
     }
 
     let chain = chain_from_blocks(config, fork_choice.best_chain())?;
     Ok((chain, fork_choice))
+}
+
+enum StorageLine {
+    Header(String),
+    Block(Box<chesscoin_core::domain::Block>),
+}
+
+fn decode_storage_line(line: &str) -> Result<StorageLine, String> {
+    if line.starts_with(STORAGE_HEADER_VERSION) {
+        decode_storage_header(line).map(StorageLine::Header)
+    } else {
+        decode_storage_record(line)
+            .map(Box::new)
+            .map(StorageLine::Block)
+    }
+}
+
+fn encode_storage_header(config: &ChainConfig) -> String {
+    let fingerprint = chain_fingerprint(config);
+    let checksum = storage_record_checksum(&fingerprint);
+    format!("{STORAGE_HEADER_VERSION}|{checksum}|{fingerprint}")
+}
+
+fn decode_storage_header(line: &str) -> Result<String, String> {
+    let fields = line.splitn(3, '|').collect::<Vec<_>>();
+    if fields.first().copied() != Some(STORAGE_HEADER_VERSION) {
+        return Err("storage header version mismatch".to_string());
+    }
+    if fields.len() != 3 {
+        return Err("storage header requires version, checksum, and fingerprint".to_string());
+    }
+
+    let expected = Digest::from_hex(fields[1])?;
+    let actual = storage_record_checksum(fields[2]);
+    if expected != actual {
+        return Err("storage header checksum mismatch".to_string());
+    }
+
+    Ok(fields[2].to_string())
 }
 
 fn encode_storage_record(block: &chesscoin_core::domain::Block) -> String {
@@ -926,7 +994,11 @@ fn storage_record_checksum(payload: &str) -> Digest {
     ToyHash.digest(payload.as_bytes())
 }
 
-fn append_block(path: &Path, block: &chesscoin_core::domain::Block) -> Result<(), String> {
+fn append_block(
+    path: &Path,
+    config: &ChainConfig,
+    block: &chesscoin_core::domain::Block,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -935,11 +1007,23 @@ fn append_block(path: &Path, block: &chesscoin_core::domain::Block) -> Result<()
             )
         })?;
     }
+    let should_write_header = match fs::metadata(path) {
+        Ok(metadata) => metadata.len() == 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|error| format!("failed to open chain storage {}: {error}", path.display()))?;
+    if should_write_header {
+        file.write_all(encode_storage_header(config).as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .map_err(|error| {
+                format!("failed to write chain storage {}: {error}", path.display())
+            })?;
+    }
     file.write_all(encode_storage_record(block).as_bytes())
         .and_then(|_| file.write_all(b"\n"))
         .and_then(|_| file.flush())
@@ -1237,6 +1321,41 @@ mod tests {
     }
 
     #[test]
+    fn storage_header_round_trips_with_checksum() {
+        let config = small_chain_config();
+        let header = encode_storage_header(&config);
+
+        assert_eq!(
+            decode_storage_header(&header).expect("valid header"),
+            chain_fingerprint(&config)
+        );
+    }
+
+    #[test]
+    fn append_block_writes_chain_fingerprint_header_for_new_logs() {
+        let data_dir = unique_test_data_dir("header-log");
+        let storage_path = data_dir.join("blocks.log");
+        let config = small_chain_config();
+        let block = competing_branch_blocks().remove(0);
+
+        append_block(&storage_path, &config, &block).expect("append good block");
+        let content = fs::read_to_string(&storage_path).expect("read log");
+        let lines = content.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            decode_storage_header(lines[0]).expect("valid header"),
+            chain_fingerprint(&config)
+        );
+        assert_eq!(
+            decode_storage_record(lines[1]).expect("valid block record"),
+            block
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
     fn storage_rejects_checksum_mismatch() {
         let block = competing_branch_blocks().remove(0);
         let payload = encode_block_message(&block);
@@ -1267,11 +1386,28 @@ mod tests {
     }
 
     #[test]
+    fn storage_rejects_incompatible_chain_fingerprint_header() {
+        let data_dir = unique_test_data_dir("fingerprint-log");
+        let storage_path = data_dir.join("blocks.log");
+        let config = small_chain_config();
+        let block = competing_branch_blocks().remove(0);
+        append_block(&storage_path, &config, &block).expect("append good block");
+
+        let mut incompatible = config;
+        incompatible.samples_per_block += 1;
+        let error = load_chains(&storage_path, incompatible).expect_err("fingerprint mismatch");
+
+        assert!(error.contains("fingerprint mismatch"), "{error}");
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
     fn interrupted_tail_record_is_ignored_on_reload() {
         let data_dir = unique_test_data_dir("tail-log");
         let storage_path = data_dir.join("blocks.log");
         let block = competing_branch_blocks().remove(0);
-        append_block(&storage_path, &block).expect("append good block");
+        append_block(&storage_path, &small_chain_config(), &block).expect("append good block");
         let mut file = OpenOptions::new()
             .append(true)
             .open(&storage_path)
@@ -1294,7 +1430,7 @@ mod tests {
         let data_dir = unique_test_data_dir("corrupt-log");
         let storage_path = data_dir.join("blocks.log");
         let block = competing_branch_blocks().remove(0);
-        append_block(&storage_path, &block).expect("append good block");
+        append_block(&storage_path, &small_chain_config(), &block).expect("append good block");
         let mut file = OpenOptions::new()
             .append(true)
             .open(&storage_path)
