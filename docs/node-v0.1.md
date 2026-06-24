@@ -24,6 +24,7 @@ You can also put stable operator settings in a simple `key=value` config file:
 ```text
 node_id=operator-a
 listen=127.0.0.1:9333
+advertise=127.0.0.1:9333
 network_id=chesscoin-local
 data_dir=.chesscoin
 mine=true
@@ -51,6 +52,7 @@ Useful options:
 --protocol-version N
                   Wire protocol version required from peers
 --listen ADDR     TCP address to bind, for example 127.0.0.1:9333
+--advertise ADDR  Dialable TCP address shared with peers
 --peer ADDR       Peer TCP address; may be repeated
 --mine            Continuously mine blocks
 --mine-once       Mine one block after startup
@@ -93,11 +95,11 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, connect/read/write timeouts must be non-zero, and `--max-message-bytes` must be at least 128.
+Startup rejects unsafe or nonsensical operator settings before binding sockets or acquiring storage locks. `--steps`, `--samples`, `--max-peers`, `--sync-max-blocks`, and `--sync-locator-hashes` must be greater than zero. `--samples` must not exceed `--steps`. Toy proof-of-work `--difficulty` must not exceed the 256-bit digest width, which prevents unmineable local configurations from hanging the miner. Network ids must be non-empty, connect/read/write timeouts must be non-zero, and `--max-message-bytes` must be at least 128. Nodes that bind to an unspecified IP such as `0.0.0.0` or `[::]` must set `--advertise` to the dialable address shared with peers.
 
 Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `peer rejections` counts self, duplicate, over-capacity, and non-dialable peer additions. Peer addresses with port zero, unspecified IPs, multicast IPs, or IPv4 broadcast are not retained. Peer catch-up requests bounded peer lists, then bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Header responses must extend the requested locator with contiguous heights, configured sample counts, and sufficient toy proof-of-work before full blocks are requested. Inbound locator requests are capped by `--sync-locator-hashes`; peer, header, or inventory responses larger than the requested limits fail that sync attempt.
 
-The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks, HELLO announcements, peer-list requests, or sync requests are handled. HELLO announcements include the sender's listen address so a configured peer can learn the caller for later gossip. During sync, nodes can also request a bounded list of known listen addresses from configured peers. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
+The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks, HELLO announcements, peer-list requests, or sync requests are handled. HELLO announcements include the sender's advertised listen address so a configured peer can learn the caller for later gossip. During sync, nodes can also request a bounded list of known listen addresses from configured peers. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
 
 Incoming blocks must declare the configured `--samples` count. A block cannot lower its own sampled verification count in the header.
 

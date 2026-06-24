@@ -626,7 +626,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             </div>
             <div class="operator-card">
               <h3>3. Connect A Peer</h3>
-              <p>Start a second node with a peer address. The node announces its listen address with HELLO so the configured peer can learn it for later gossip, and sync can request bounded peer lists from known peers. Add <code>--mine</code> for continuous toy mining, or <code>--mine-once</code> for a smoke test.</p>
+              <p>Start a second node with a peer address. The node announces its advertised listen address with HELLO so the configured peer can learn it for later gossip, and sync can request bounded peer lists from known peers. Add <code>--mine</code> for continuous toy mining, or <code>--mine-once</code> for a smoke test.</p>
               <div class="operator-command">./chesscoin node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333 --mine</div>
             </div>
           </div>
@@ -636,6 +636,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
               <ul>
                 <li><code>--node-id ID</code> sets a local label.</li>
                 <li><code>--listen ADDR</code> binds a TCP listener.</li>
+                <li><code>--advertise ADDR</code> sets the dialable address shared with peers.</li>
                 <li><code>--peer ADDR</code> adds a peer; repeat as needed.</li>
                 <li><code>--network-id ID</code> separates local networks.</li>
                 <li><code>--difficulty N</code> controls toy proof-of-work leading zero bits.</li>
@@ -646,7 +647,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li><code>--write-timeout-ms N</code> bounds outbound peer writes.</li>
                 <li><code>--sync-locator-hashes N</code> bounds block-locator catch-up requests.</li>
               </ul>
-              <p>Startup rejects empty network ids, zero training or verification counts, sample counts above the step count, unmineable toy difficulty above 256 bits, zero connect/read/write timeouts, and message limits below 128 bytes.</p>
+              <p>Startup rejects empty network ids, zero training or verification counts, sample counts above the step count, unmineable toy difficulty above 256 bits, wildcard listeners without an advertised address, zero connect/read/write timeouts, and message limits below 128 bytes.</p>
             </div>
             <div class="operator-card">
               <h3>Protocol Checks</h3>

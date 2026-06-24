@@ -108,6 +108,41 @@ fn node_command_rejects_zero_write_timeout() {
 }
 
 #[test]
+fn node_command_requires_advertise_for_unspecified_listener() {
+    let output = Command::new(chesscoin_bin())
+        .args(["node", "--listen", "0.0.0.0:0", "--run-ms", "1"])
+        .output()
+        .expect("node command runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("advertise_addr is required"), "{stderr}");
+}
+
+#[test]
+fn node_command_prints_configured_advertise_address() {
+    let output = Command::new(chesscoin_bin())
+        .args([
+            "node",
+            "--listen",
+            "127.0.0.1:0",
+            "--advertise",
+            "127.0.0.1:39393",
+            "--run-ms",
+            "1",
+        ])
+        .output()
+        .expect("node command runs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("advertising          127.0.0.1:39393"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn two_cli_nodes_exchange_a_mined_block() {
     let _guard = multi_node_test_guard();
     let addr_a = reserve_local_addr();

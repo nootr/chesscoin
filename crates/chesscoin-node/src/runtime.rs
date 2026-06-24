@@ -27,6 +27,7 @@ const MIN_MAX_MESSAGE_BYTES: usize = 128;
 pub struct NodeConfig {
     pub node_id: String,
     pub listen_addr: SocketAddr,
+    pub advertise_addr: Option<SocketAddr>,
     pub peers: Vec<SocketAddr>,
     pub chain: ChainConfig,
     pub mine_once_on_start: bool,
@@ -101,6 +102,7 @@ impl NodeConfig {
         Self {
             node_id: node_id.into(),
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            advertise_addr: None,
             peers: Vec::new(),
             chain: ChainConfig::default(),
             mine_once_on_start: false,
@@ -116,6 +118,7 @@ impl NodeConfig {
 pub struct NodeSnapshot {
     pub node_id: String,
     pub bound_addr: SocketAddr,
+    pub advertised_addr: SocketAddr,
     pub height: u64,
     pub head: Digest,
     pub accepted_blocks: usize,
@@ -184,6 +187,7 @@ impl RunningNode {
 struct NodeState {
     node_id: String,
     bound_addr: SocketAddr,
+    advertised_addr: SocketAddr,
     chain: ChainState,
     fork_choice: ForkChoiceState,
     peers: Vec<SocketAddr>,
@@ -229,6 +233,12 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
     let bound_addr = listener
         .local_addr()
         .map_err(|error| format!("failed to read listener addr: {error}"))?;
+    let advertised_addr = config.advertise_addr.unwrap_or(bound_addr);
+    if !peer_address_is_dialable(advertised_addr) {
+        return Err(format!(
+            "advertise_addr must be dialable, got {advertised_addr}"
+        ));
+    }
 
     let (command_tx, command_rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
@@ -250,11 +260,16 @@ pub fn start_node(mut config: NodeConfig) -> Result<RunningNode, String> {
         )
     };
     let initial_sync = config.sync.clone();
-    let (peers, peer_rejections) =
-        normalize_initial_peers(bound_addr, config.peers, config.network.max_peers);
+    let (peers, peer_rejections) = normalize_initial_peers(
+        bound_addr,
+        advertised_addr,
+        config.peers,
+        config.network.max_peers,
+    );
     let state = Arc::new(Mutex::new(NodeState {
         node_id: config.node_id,
         bound_addr,
+        advertised_addr,
         chain,
         fork_choice,
         peers,
@@ -324,6 +339,18 @@ pub fn validate_node_config(config: &NodeConfig) -> Result<(), String> {
     }
     if config.network.wire.protocol_version == 0 {
         return Err("protocol_version must be greater than zero".to_string());
+    }
+    if config.advertise_addr.is_none() && ip_is_unspecified(config.listen_addr.ip()) {
+        return Err(
+            "advertise_addr is required when listen_addr uses an unspecified IP".to_string(),
+        );
+    }
+    if let Some(advertise_addr) = config.advertise_addr {
+        if !peer_address_is_dialable(advertise_addr) {
+            return Err(format!(
+                "advertise_addr must be dialable, got {advertise_addr}"
+            ));
+        }
     }
     if config.network.max_message_bytes < MIN_MAX_MESSAGE_BYTES {
         return Err(format!(
@@ -610,7 +637,7 @@ fn serve_peers(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>, requested_l
 
 fn peer_advertisement(guard: &NodeState, limit: usize) -> Vec<SocketAddr> {
     let mut peers = Vec::new();
-    for peer in std::iter::once(guard.bound_addr).chain(guard.peers.iter().copied()) {
+    for peer in std::iter::once(guard.advertised_addr).chain(guard.peers.iter().copied()) {
         if peers.len() >= limit {
             break;
         }
@@ -1039,6 +1066,7 @@ fn add_peer(state: &Arc<Mutex<NodeState>>, peer: SocketAddr) -> bool {
 
 fn normalize_initial_peers(
     bound_addr: SocketAddr,
+    advertised_addr: SocketAddr,
     peers: Vec<SocketAddr>,
     max_peers: usize,
 ) -> (Vec<SocketAddr>, usize) {
@@ -1048,6 +1076,7 @@ fn normalize_initial_peers(
     for peer in peers {
         if !peer_address_is_dialable(peer)
             || peer == bound_addr
+            || peer == advertised_addr
             || accepted.contains(&peer)
             || accepted.len() >= max_peers
         {
@@ -1063,6 +1092,7 @@ fn normalize_initial_peers(
 fn add_peer_to_state(guard: &mut NodeState, peer: SocketAddr) -> bool {
     if !peer_address_is_dialable(peer)
         || peer == guard.bound_addr
+        || peer == guard.advertised_addr
         || guard.peers.contains(&peer)
         || guard.peers.len() >= guard.network.max_peers
     {
@@ -1083,6 +1113,13 @@ fn peer_address_is_dialable(peer: SocketAddr) -> bool {
             !addr.is_unspecified() && !addr.is_multicast() && addr != Ipv4Addr::BROADCAST
         }
         IpAddr::V6(addr) => !addr.is_unspecified() && !addr.is_multicast(),
+    }
+}
+
+fn ip_is_unspecified(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(addr) => addr.is_unspecified(),
+        IpAddr::V6(addr) => addr.is_unspecified(),
     }
 }
 
@@ -1107,7 +1144,7 @@ fn announce_to_peer(state: &Mutex<NodeState>, peer: SocketAddr) {
                 node_id: guard.node_id.clone(),
                 height: guard.chain.height(),
                 head: guard.chain.head_hash(&hasher),
-                listen_addr: guard.bound_addr,
+                listen_addr: guard.advertised_addr,
             },
         )
     };
@@ -1167,6 +1204,7 @@ fn snapshot(state: &Arc<Mutex<NodeState>>) -> NodeSnapshot {
     NodeSnapshot {
         node_id: guard.node_id.clone(),
         bound_addr: guard.bound_addr,
+        advertised_addr: guard.advertised_addr,
         height: guard.chain.height(),
         head: guard.chain.head_hash(&hasher),
         accepted_blocks: guard.accepted_blocks,
@@ -1623,6 +1661,7 @@ mod tests {
         NodeState {
             node_id: "test-node".to_string(),
             bound_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            advertised_addr: SocketAddr::from(([127, 0, 0, 1], 9333)),
             chain: ChainState::new(config.clone()),
             fork_choice: ForkChoiceState::new(config),
             peers: Vec::new(),
@@ -1675,14 +1714,16 @@ mod tests {
         let peer_c = SocketAddr::from(([127, 0, 0, 1], 9336));
         let invalid = SocketAddr::from(([0, 0, 0, 0], 9337));
 
+        let advertised = SocketAddr::from(([127, 0, 0, 1], 9338));
         let (peers, rejected) = normalize_initial_peers(
             bound,
-            vec![bound, invalid, peer_a, peer_a, peer_b, peer_c],
+            advertised,
+            vec![bound, advertised, invalid, peer_a, peer_a, peer_b, peer_c],
             2,
         );
 
         assert_eq!(peers, vec![peer_a, peer_b]);
-        assert_eq!(rejected, 4);
+        assert_eq!(rejected, 5);
     }
 
     #[test]
@@ -1700,6 +1741,9 @@ mod tests {
             &mut state,
             SocketAddr::from(([0, 0, 0, 0], 9333))
         ));
+        let advertised = SocketAddr::from(([127, 0, 0, 1], 9336));
+        state.advertised_addr = advertised;
+        assert!(!add_peer_to_state(&mut state, advertised));
         assert_eq!(state.peers, Vec::<SocketAddr>::new());
         assert!(add_peer_to_state(&mut state, peer_a));
         assert!(!add_peer_to_state(&mut state, peer_a));
@@ -1776,6 +1820,16 @@ mod tests {
         config.network.write_timeout = Duration::ZERO;
         let error = start_node_error(config);
         assert!(error.contains("write_timeout"), "{error}");
+
+        let mut config = NodeConfig::localhost_ephemeral("missing-advertise");
+        config.listen_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+        let error = start_node_error(config);
+        assert!(error.contains("advertise_addr is required"), "{error}");
+
+        let mut config = NodeConfig::localhost_ephemeral("bad-advertise");
+        config.advertise_addr = Some(SocketAddr::from(([0, 0, 0, 0], 9333)));
+        let error = start_node_error(config);
+        assert!(error.contains("advertise_addr must be dialable"), "{error}");
     }
 
     #[test]
@@ -1833,8 +1887,30 @@ mod tests {
 
         assert_eq!(
             peer_advertisement(&state, 2),
-            vec![state.bound_addr, peer_a]
+            vec![state.advertised_addr, peer_a]
         );
+    }
+
+    #[test]
+    fn configured_advertise_address_is_announced_to_peers() {
+        let mut config_a = NodeConfig::localhost_ephemeral("advertise-a");
+        config_a.chain = small_chain_config();
+        let node_a = start_node(config_a).expect("node a starts");
+
+        let advertised = SocketAddr::from(([127, 0, 0, 1], 39_393));
+        let mut config_b = NodeConfig::localhost_ephemeral("advertise-b");
+        config_b.chain = small_chain_config();
+        config_b.advertise_addr = Some(advertised);
+        config_b.peers.push(node_a.bound_addr());
+        let node_b = start_node(config_b).expect("node b starts");
+
+        let snapshot_a = wait_for_known_peer(&node_a, advertised);
+
+        assert!(snapshot_a.known_peers.contains(&advertised));
+        assert!(!snapshot_a.known_peers.contains(&node_b.bound_addr()));
+
+        node_b.stop();
+        node_a.stop();
     }
 
     #[test]

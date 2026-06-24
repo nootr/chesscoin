@@ -116,6 +116,7 @@ fn run_node(args: &[String]) -> Result<(), String> {
     println!("-------------------");
     println!("node id              {}", startup.node_id);
     println!("listening            {}", node.bound_addr());
+    println!("advertising          {}", startup.advertised_addr);
     println!("peers                {:?}", startup.known_peers);
     println!("height               {}", startup.height);
     println!(
@@ -260,6 +261,7 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
         config: NodeConfig {
             node_id: "chesscoin-node".to_string(),
             listen_addr: parse_socket_addr("127.0.0.1:9333")?,
+            advertise_addr: None,
             peers: Vec::new(),
             chain: ChainConfig::default(),
             mine_once_on_start: false,
@@ -293,6 +295,10 @@ fn parse_node_request(args: &[String]) -> Result<NodeRequest, String> {
             "--listen" => {
                 request.config.listen_addr =
                     parse_next::<SocketAddr>(&args, &mut index, "--listen")?;
+            }
+            "--advertise" => {
+                request.config.advertise_addr =
+                    Some(parse_next::<SocketAddr>(&args, &mut index, "--advertise")?);
             }
             "--peer" => {
                 request
@@ -498,7 +504,7 @@ fn print_usage() {
     println!(
         "Usage:
   chesscoin simulate [--steps N] [--samples N] [--seed N] [--entropy N] [--tamper-step N]
-  chesscoin node [--config PATH] [--listen ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--connect-timeout-ms N] [--read-timeout-ms N] [--write-timeout-ms N] [--sync-interval-ms N] [--sync-locator-hashes N]
+  chesscoin node [--config PATH] [--listen ADDR] [--advertise ADDR] [--peer ADDR] [--mine] [--data-dir PATH] [--max-peers N] [--connect-timeout-ms N] [--read-timeout-ms N] [--write-timeout-ms N] [--sync-interval-ms N] [--sync-locator-hashes N]
 
 Defaults:
   simulate: --steps 16 --samples 6 --seed 42 --entropy 2026
