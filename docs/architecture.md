@@ -44,6 +44,7 @@ That separation is deliberate. Tests can exercise protocol behavior through fake
 11. Peer messages carry an explicit protocol version, network id, and chain fingerprint, so incompatible networks or chain parameters are rejected before block handling.
 12. Late peers request bounded best-chain headers after a block locator, screen those headers for locator continuity, height sequence, configured sample count, and toy proof-of-work, then fetch and validate missing blocks through the normal fork-choice insertion path. Oversized peer lists, locators, headers, and inventory responses are rejected before block handling.
 13. Node startup validates chain, network, sync, storage, and miner settings before binding sockets, acquiring storage locks, or starting a miner.
+14. Node shutdown joins active inbound peer handlers before returning, which prevents detached socket handlers from outliving node state or delaying storage-lock release invisibly.
 
 ## Current Research Limits
 

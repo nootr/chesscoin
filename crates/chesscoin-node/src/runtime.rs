@@ -423,9 +423,16 @@ fn node_loop(
     let mut next_mine_at = Instant::now();
     let sync = initial_sync;
     let mut next_sync_at = Instant::now();
+    let mut inbound_handlers = Vec::new();
 
     while !stop.load(Ordering::SeqCst) {
-        accept_ready_connections(&listener, &state, &active_inbound_connections);
+        accept_ready_connections(
+            &listener,
+            &state,
+            &active_inbound_connections,
+            &mut inbound_handlers,
+        );
+        join_finished_inbound_handlers(&mut inbound_handlers);
 
         while let Ok(command) = command_rx.try_recv() {
             match command {
@@ -475,12 +482,15 @@ fn node_loop(
 
         thread::sleep(Duration::from_millis(10));
     }
+
+    join_all_inbound_handlers(inbound_handlers);
 }
 
 fn accept_ready_connections(
     listener: &TcpListener,
     state: &Arc<Mutex<NodeState>>,
     active_inbound_connections: &Arc<AtomicUsize>,
+    inbound_handlers: &mut Vec<JoinHandle<()>>,
 ) {
     loop {
         match listener.accept() {
@@ -499,14 +509,33 @@ fn accept_ready_connections(
                 };
 
                 let handler_state = Arc::clone(state);
-                thread::spawn(move || {
+                let handle = thread::spawn(move || {
                     let _permit = permit;
                     handle_stream(stream, &handler_state);
                 });
+                inbound_handlers.push(handle);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         }
+    }
+}
+
+fn join_finished_inbound_handlers(inbound_handlers: &mut Vec<JoinHandle<()>>) {
+    let mut index = 0;
+    while index < inbound_handlers.len() {
+        if inbound_handlers[index].is_finished() {
+            let handle = inbound_handlers.swap_remove(index);
+            let _ = handle.join();
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn join_all_inbound_handlers(inbound_handlers: Vec<JoinHandle<()>>) {
+    for handle in inbound_handlers {
+        let _ = handle.join();
     }
 }
 
@@ -2702,6 +2731,41 @@ mod tests {
         let restarted = start_node(config).expect("lock is released after stop");
         restarted.stop();
 
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn node_stop_waits_for_inbound_handlers_before_releasing_storage_lock() {
+        let data_dir = unique_test_data_dir("storage-lock-inbound");
+        let mut config = NodeConfig::localhost_ephemeral("storage-lock-inbound-a");
+        config.chain = small_chain_config();
+        config.storage = Some(StorageConfig {
+            data_dir: data_dir.clone(),
+        });
+        config.network.max_inbound_connections = 1;
+        config.network.read_timeout = Duration::from_millis(100);
+        let node = start_node(config.clone()).expect("node starts");
+
+        let mut held_streams = Vec::new();
+        let mut first = TcpStream::connect(node.bound_addr()).expect("first connect");
+        first.write_all(b"HOLD").expect("hold first connection");
+        held_streams.push(first);
+
+        for _ in 0..8 {
+            held_streams.push(TcpStream::connect(node.bound_addr()).expect("extra connect"));
+            if wait_for_dropped_inbound(&node, 1).dropped_inbound_connections >= 1 {
+                break;
+            }
+        }
+        assert!(node.snapshot().dropped_inbound_connections >= 1);
+
+        node.stop();
+
+        config.node_id = "storage-lock-inbound-b".to_string();
+        let restarted = start_node(config).expect("lock is released after inbound handlers stop");
+        restarted.stop();
+
+        drop(held_streams);
         let _ = fs::remove_dir_all(data_dir);
     }
 
