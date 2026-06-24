@@ -7,7 +7,7 @@ shasum -a 256 -c SHA256SUMS.txt
 gh attestation verify chesscoin-v0.1.0-linux-x86_64.tar.gz --repo nootr/chesscoin
 ```
 
-Start a node with continuous v0.1 toy proof-of-work mining and local block-log persistence:
+Start a node with continuous v0.1 toy proof-of-work mining and local block-log persistence. This mines executable local research blocks, but it is not RandomX mining yet:
 
 ```sh
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --data-dir .chesscoin
@@ -90,9 +90,9 @@ Use `--mine-once` for deterministic smoke tests:
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine-once --run-ms 500 --difficulty 0 --steps 4 --samples 4
 ```
 
-Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `peer rejections` counts self, duplicate, and over-capacity peer additions. Peer catch-up requests bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Inbound locator requests are capped by `--sync-locator-hashes`; peer header or inventory responses larger than the requested `--sync-max-blocks` limit fail that sync attempt.
+Node output includes the active `height` and `head`, plus counters for `mined blocks`, `known blocks`, `accepted blocks`, `rejected blocks`, `synced blocks`, `reorgs`, `known peers`, `storage failures`, and `peer rejections`. `known blocks` counts valid blocks retained by fork choice, including valid side branches. `reorgs` increments when the active best branch changes away from the previous head. `known peers` counts retained peer listen addresses. `storage failures` counts failed block-log appends after startup. `peer rejections` counts self, duplicate, and over-capacity peer additions. Peer catch-up requests bounded peer lists, then bounded best-chain headers after the first common block locator, then fetches missing blocks through the normal validation path. Inbound locator requests are capped by `--sync-locator-hashes`; peer, header, or inventory responses larger than the requested limits fail that sync attempt.
 
-The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks, HELLO announcements, or sync requests are handled. HELLO announcements include the sender's listen address so a configured peer can learn the caller for later gossip. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
+The node prints a derived chain fingerprint in its startup `network` line. Peers must match protocol version, `network_id`, and this chain fingerprint before their blocks, HELLO announcements, peer-list requests, or sync requests are handled. HELLO announcements include the sender's listen address so a configured peer can learn the caller for later gossip. During sync, nodes can also request a bounded list of known listen addresses from configured peers. The fingerprint currently covers `steps`, `samples`, and toy proof-of-work `difficulty`.
 
 Incoming blocks must declare the configured `--samples` count. A block cannot lower its own sampled verification count in the header.
 

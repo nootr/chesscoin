@@ -605,7 +605,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
         <div class="operator-inner">
           <div class="operator-header">
             <h2>Node Operator Guide</h2>
-            <p>Node v0.1 is for local research networks and early protocol testing. It ships as a single <code>chesscoin</code> CLI binary and can run as a listener, a toy proof-of-work mining node, or a peer connected to another local node.</p>
+            <p>Node v0.1 is for local research networks and early protocol testing. It ships as a single <code>chesscoin</code> CLI binary and can run as a listener, a toy proof-of-work mining node, or a peer connected to another local node. It mines executable research blocks, but RandomX mining is not integrated yet.</p>
           </div>
           <div class="operator-grid">
             <div class="operator-card">
@@ -626,7 +626,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
             </div>
             <div class="operator-card">
               <h3>3. Connect A Peer</h3>
-              <p>Start a second node with a peer address. The node announces its listen address with HELLO so the configured peer can learn it for later gossip. Add <code>--mine</code> for continuous mining, or <code>--mine-once</code> for a smoke test.</p>
+              <p>Start a second node with a peer address. The node announces its listen address with HELLO so the configured peer can learn it for later gossip, and sync can request bounded peer lists from known peers. Add <code>--mine</code> for continuous toy mining, or <code>--mine-once</code> for a smoke test.</p>
               <div class="operator-command">./chesscoin node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333 --mine</div>
             </div>
           </div>
@@ -660,13 +660,14 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
                 <li>Persisted block-log chain fingerprint compatibility.</li>
                 <li>Data-directory locking for local block-log writers.</li>
                 <li>Storage failure counters for failed block-log appends.</li>
+                <li>Bounded peer exchange from known peers.</li>
                 <li>Best-branch tracking with known block, reorg, and peer rejection counters plus bounded header-first block-locator catch-up.</li>
               </ul>
             </div>
             <div class="operator-card">
               <h3>Research Limits</h3>
               <ul>
-                <li>No wallet, token, robust database, or header-first inventory sync yet.</li>
+                <li>No wallet, token, robust database, or production-grade sync yet.</li>
                 <li>RandomX is not integrated in v0.1.</li>
                 <li>The current hash and PoW are toy adapters.</li>
                 <li>Use isolated test networks only.</li>

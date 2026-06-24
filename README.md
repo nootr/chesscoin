@@ -2,7 +2,7 @@
 
 ChessCoin is an experimental protocol research project exploring deterministic proof-of-training for chess AI on top of a proof-of-work blockchain design.
 
-The repository now contains the public GitHub Pages whitepaper, a local simulator, and a v0.1 node that can mine toy proof-of-work blocks and exchange them with peers over TCP. The whitepaper is published from `www/index.html`, with supporting assets in `www/assets/`.
+The repository now contains the public GitHub Pages whitepaper, a local simulator, and a v0.1 node that can mine toy proof-of-work blocks and exchange them with peers over TCP. This is executable mining for local research networks, not RandomX mining yet. The whitepaper is published from `www/index.html`, with supporting assets in `www/assets/`.
 
 GitHub Pages is deployed by the workflow in `.github/workflows/pages.yml`, which publishes the `www/` folder.
 
@@ -42,7 +42,7 @@ Verify GitHub provenance for a downloaded archive:
 gh attestation verify chesscoin-v0.1.0-linux-x86_64.tar.gz --repo nootr/chesscoin
 ```
 
-Start a node with continuous mining and local block-log persistence:
+Start a node with continuous toy proof-of-work mining and local block-log persistence:
 
 ```sh
 cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9333 --mine --data-dir .chesscoin
@@ -80,7 +80,7 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:0 --mine --mine-interval-m
 
 Use `--mine-once` when you want a single block for smoke tests instead of a continuous miner.
 
-Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, configured sample count, trace-state continuity, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers; a `node.lock` file prevents two local nodes from writing the same data directory, and persistence failures are counted in node output instead of being ignored. New block logs include a checksummed chain-fingerprint header so startup fails clearly if local data belongs to different `steps`, `samples`, or `difficulty` settings. Late peers request bounded headers after the first common locator hash before fetching missing best-chain blocks, and oversized locators, headers, or inventory responses are rejected. Peer traffic is wrapped with protocol version, network id, and chain-fingerprint checks, startup HELLO announcements share listen addresses with configured peers, inbound peer messages are bounded by configurable size and timeout limits, and the known-peer set is capped with rejected peer additions counted in node output.
+Node v0.1 validates incoming blocks by checking height, previous block hash, model transition metadata, configured sample count, trace-state continuity, trace root, commitment-chain structure, toy proof-of-work, and sampled deterministic training transitions. Valid blocks are tracked in a core fork-choice index, the active node view follows the best known branch, and reorg/known-block counters are exposed in node output. Accepted blocks are persisted as checksummed block-log records when `--data-dir` is set and gossiped to known peers; a `node.lock` file prevents two local nodes from writing the same data directory, and persistence failures are counted in node output instead of being ignored. New block logs include a checksummed chain-fingerprint header so startup fails clearly if local data belongs to different `steps`, `samples`, or `difficulty` settings. Late peers request bounded peer lists and bounded headers after the first common locator hash before fetching missing best-chain blocks, and oversized peer, locator, header, or inventory responses are rejected. Peer traffic is wrapped with protocol version, network id, and chain-fingerprint checks, startup HELLO announcements share listen addresses with configured peers, inbound peer messages are bounded by configurable size and timeout limits, and the known-peer set is capped with rejected peer additions counted in node output.
 
 ## Local Simulator
 

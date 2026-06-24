@@ -428,6 +428,9 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             }
             serve_headers(stream, state, &locator, limit);
         }
+        Ok(PeerMessage::GetPeers { limit }) => {
+            serve_peers(stream, state, limit);
+        }
         Ok(PeerMessage::Block(block)) => {
             let block = *block;
             let application = {
@@ -448,6 +451,10 @@ fn handle_stream(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>) {
             guard.malformed_messages += 1;
         }
         Ok(PeerMessage::Headers { .. }) => {
+            let mut guard = state.lock().expect("node state lock poisoned");
+            guard.malformed_messages += 1;
+        }
+        Ok(PeerMessage::Peers { .. }) => {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.malformed_messages += 1;
         }
@@ -514,6 +521,33 @@ fn serve_headers(
     let _ = stream
         .write_all(line.as_bytes())
         .and_then(|_| stream.flush());
+}
+
+fn serve_peers(mut stream: TcpStream, state: &Arc<Mutex<NodeState>>, requested_limit: usize) {
+    let (peers, network) = {
+        let guard = state.lock().expect("node state lock poisoned");
+        let limit = requested_limit.min(guard.network.max_peers);
+        (peer_advertisement(&guard, limit), guard.network.clone())
+    };
+
+    let _ = stream.set_write_timeout(Some(network.connect_timeout));
+    let line = encode_network_message(&network.wire, &PeerMessage::Peers { peers }) + "\n";
+    let _ = stream
+        .write_all(line.as_bytes())
+        .and_then(|_| stream.flush());
+}
+
+fn peer_advertisement(guard: &NodeState, limit: usize) -> Vec<SocketAddr> {
+    let mut peers = Vec::new();
+    for peer in std::iter::once(guard.bound_addr).chain(guard.peers.iter().copied()) {
+        if peers.len() >= limit {
+            break;
+        }
+        if !peers.contains(&peer) {
+            peers.push(peer);
+        }
+    }
+    peers
 }
 
 fn serve_blocks(
@@ -669,13 +703,14 @@ fn persist_block(guard: &mut NodeState, block: &chesscoin_core::domain::Block) {
 }
 
 fn sync_once(state: &Arc<Mutex<NodeState>>) {
-    let (peers, locator, network, limit) = {
+    let (peers, locator, network, block_limit, peer_limit) = {
         let guard = state.lock().expect("node state lock poisoned");
         (
             guard.peers.clone(),
             block_locator(&guard.chain, guard.sync.max_locator_hashes),
             guard.network.clone(),
             guard.sync.max_blocks_per_response,
+            guard.network.max_peers,
         )
     };
 
@@ -683,11 +718,64 @@ fn sync_once(state: &Arc<Mutex<NodeState>>) {
         return;
     }
 
-    for peer in peers {
-        if sync_from_peer(state, peer, locator.clone(), limit, &network).is_err() {
+    for peer in &peers {
+        if exchange_peers_with(state, *peer, peer_limit, &network).is_err() {
             let mut guard = state.lock().expect("node state lock poisoned");
             guard.failed_syncs += 1;
         }
+    }
+
+    let peers = {
+        let guard = state.lock().expect("node state lock poisoned");
+        guard.peers.clone()
+    };
+
+    for peer in peers {
+        if sync_from_peer(state, peer, locator.clone(), block_limit, &network).is_err() {
+            let mut guard = state.lock().expect("node state lock poisoned");
+            guard.failed_syncs += 1;
+        }
+    }
+}
+
+fn exchange_peers_with(
+    state: &Arc<Mutex<NodeState>>,
+    peer: SocketAddr,
+    limit: usize,
+    network: &NetworkConfig,
+) -> Result<(), ()> {
+    let advertised = peers_from_peer(peer, limit, network)?;
+    let mut guard = state.lock().expect("node state lock poisoned");
+    for candidate in advertised {
+        if !add_peer_to_state(&mut guard, candidate) {
+            guard.peer_rejections += 1;
+        }
+    }
+    Ok(())
+}
+
+fn peers_from_peer(
+    peer: SocketAddr,
+    limit: usize,
+    network: &NetworkConfig,
+) -> Result<Vec<SocketAddr>, ()> {
+    let mut stream = TcpStream::connect_timeout(&peer, network.connect_timeout).map_err(|_| ())?;
+    stream
+        .set_read_timeout(Some(network.read_timeout))
+        .map_err(|_| ())?;
+    let request = encode_network_message(&network.wire, &PeerMessage::GetPeers { limit }) + "\n";
+    stream.write_all(request.as_bytes()).map_err(|_| ())?;
+    stream.flush().map_err(|_| ())?;
+
+    let line = match read_limited_line_from(&mut stream, network.max_message_bytes) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Err(()),
+        Err(IncomingReadError::Oversized) | Err(IncomingReadError::Io) => return Err(()),
+    };
+
+    match decode_network_message(&line, &network.wire).map_err(|_| ())? {
+        PeerMessage::Peers { peers } if peers.len() <= limit => Ok(peers),
+        _ => Err(()),
     }
 }
 
@@ -1485,6 +1573,19 @@ mod tests {
     }
 
     #[test]
+    fn peer_advertisement_includes_self_deduplicates_and_respects_limit() {
+        let mut state = test_state(small_chain_config(), None);
+        let peer_a = SocketAddr::from(([127, 0, 0, 1], 9334));
+        let peer_b = SocketAddr::from(([127, 0, 0, 1], 9335));
+        state.peers = vec![peer_a, peer_a, peer_b];
+
+        assert_eq!(
+            peer_advertisement(&state, 2),
+            vec![state.bound_addr, peer_a]
+        );
+    }
+
+    #[test]
     fn startup_hello_announces_configured_peer_listen_address() {
         let mut config_a = NodeConfig::localhost_ephemeral("node-a");
         config_a.chain = small_chain_config();
@@ -1500,6 +1601,36 @@ mod tests {
         assert!(snapshot_a.known_peers.contains(&node_b.bound_addr()));
 
         node_b.stop();
+        node_a.stop();
+    }
+
+    #[test]
+    fn peer_exchange_discovers_listen_addresses_from_known_peers() {
+        let mut config_a = NodeConfig::localhost_ephemeral("peer-a");
+        config_a.chain = small_chain_config();
+        let node_a = start_node(config_a).expect("node a starts");
+
+        let mut config_c = NodeConfig::localhost_ephemeral("peer-c");
+        config_c.chain = small_chain_config();
+        config_c.peers.push(node_a.bound_addr());
+        let node_c = start_node(config_c).expect("node c starts");
+        let snapshot_a = wait_for_known_peer(&node_a, node_c.bound_addr());
+        assert!(snapshot_a.known_peers.contains(&node_c.bound_addr()));
+
+        let mut config_b = NodeConfig::localhost_ephemeral("peer-b");
+        config_b.chain = small_chain_config();
+        config_b.peers.push(node_a.bound_addr());
+        let node_b = start_node(config_b).expect("node b starts");
+
+        node_b
+            .send(NodeCommand::SyncOnce)
+            .expect("sync command sends");
+        let snapshot_b = wait_for_known_peer(&node_b, node_c.bound_addr());
+
+        assert!(snapshot_b.known_peers.contains(&node_c.bound_addr()));
+
+        node_b.stop();
+        node_c.stop();
         node_a.stop();
     }
 
@@ -1897,6 +2028,37 @@ mod tests {
     }
 
     #[test]
+    fn node_serves_bounded_peers() {
+        let mut config = NodeConfig::localhost_ephemeral("peers");
+        config.chain = small_chain_config();
+        config.network.max_peers = 4;
+        let node = start_node(config).expect("node starts");
+        let network = {
+            let guard = node.state.lock().expect("node state lock");
+            guard.network.clone()
+        };
+        let request =
+            encode_network_message(&network.wire, &PeerMessage::GetPeers { limit: 1 }) + "\n";
+        let mut stream = TcpStream::connect(node.bound_addr()).expect("connect");
+        stream.write_all(request.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+
+        let line = read_limited_line_from(&mut stream, network.max_message_bytes)
+            .expect("read peers")
+            .expect("peers line");
+        let response = decode_network_message(&line, &network.wire).expect("valid peers");
+
+        assert_eq!(
+            response,
+            PeerMessage::Peers {
+                peers: vec![node.bound_addr()]
+            }
+        );
+
+        node.stop();
+    }
+
+    #[test]
     fn continuous_miner_produces_multiple_blocks() {
         let mut config = NodeConfig::localhost_ephemeral("miner");
         config.chain.difficulty_zero_bits = 0;
@@ -2101,6 +2263,36 @@ mod tests {
         });
 
         assert_eq!(inventory_from_peer(peer, Vec::new(), 1, &network), Err(()));
+
+        handle.join().expect("fake peer exits");
+    }
+
+    #[test]
+    fn peers_response_over_requested_limit_fails_exchange() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake peer");
+        let peer = listener.local_addr().expect("fake peer addr");
+        let network = NetworkConfig::default();
+        let response_network = network.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept peers request");
+            let _ = read_limited_line_from(&mut stream, response_network.max_message_bytes)
+                .expect("read request");
+            let response = encode_network_message(
+                &response_network.wire,
+                &PeerMessage::Peers {
+                    peers: vec![
+                        SocketAddr::from(([127, 0, 0, 1], 9334)),
+                        SocketAddr::from(([127, 0, 0, 1], 9335)),
+                    ],
+                },
+            ) + "\n";
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+
+        assert_eq!(peers_from_peer(peer, 1, &network), Err(()));
 
         handle.join().expect("fake peer exits");
     }

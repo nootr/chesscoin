@@ -6,7 +6,7 @@ use chesscoin_core::domain::{
 };
 
 pub const WIRE_MAGIC: &str = "CHESSCOIN";
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireConfig {
@@ -61,6 +61,12 @@ pub enum PeerMessage {
     },
     Headers {
         headers: Vec<BlockHeader>,
+    },
+    GetPeers {
+        limit: usize,
+    },
+    Peers {
+        peers: Vec<SocketAddr>,
     },
     Block(Box<Block>),
     EndBlocks,
@@ -160,6 +166,17 @@ pub fn encode_message(message: &PeerMessage) -> String {
                 .join(";");
             format!("HEADERS|{headers}")
         }
+        PeerMessage::GetPeers { limit } => {
+            format!("GET_PEERS|{limit}")
+        }
+        PeerMessage::Peers { peers } => {
+            let peers = peers
+                .iter()
+                .map(SocketAddr::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("PEERS|{peers}")
+        }
         PeerMessage::Block(block) => encode_block(block),
         PeerMessage::EndBlocks => "END_BLOCKS".to_string(),
     }
@@ -179,6 +196,8 @@ pub fn decode_block_message(line: &str) -> Result<Block, String> {
         PeerMessage::Inventory { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::GetHeaders { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::Headers { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::GetPeers { .. } => Err("expected BLOCK message".to_string()),
+        PeerMessage::Peers { .. } => Err("expected BLOCK message".to_string()),
         PeerMessage::EndBlocks => Err("expected BLOCK message".to_string()),
     }
 }
@@ -194,6 +213,8 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
         Some("INVENTORY") => decode_inventory(&fields),
         Some("GET_HEADERS") => decode_get_headers(&fields),
         Some("HEADERS") => decode_headers(&fields),
+        Some("GET_PEERS") => decode_get_peers(&fields),
+        Some("PEERS") => decode_peers(&fields),
         Some("BLOCK") => decode_block(&fields),
         Some("END_BLOCKS") => {
             if fields.len() == 1 {
@@ -205,6 +226,33 @@ pub fn decode_message(line: &str) -> Result<PeerMessage, String> {
         Some(other) => Err(format!("unknown message type '{other}'")),
         None => Err("empty message".to_string()),
     }
+}
+
+fn decode_get_peers(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 2 {
+        return Err("GET_PEERS requires 1 field".to_string());
+    }
+
+    Ok(PeerMessage::GetPeers {
+        limit: parse_field(fields[1], "limit")?,
+    })
+}
+
+fn decode_peers(fields: &[&str]) -> Result<PeerMessage, String> {
+    if fields.len() != 2 {
+        return Err("PEERS requires 1 field".to_string());
+    }
+
+    let peers = if fields[1].is_empty() {
+        Vec::new()
+    } else {
+        fields[1]
+            .split(',')
+            .map(|field| parse_field(field, "peer address"))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    Ok(PeerMessage::Peers { peers })
 }
 
 fn decode_get_inventory(fields: &[&str]) -> Result<PeerMessage, String> {
@@ -615,6 +663,31 @@ mod tests {
 
         let encoded = encode_message(&message);
         let decoded = decode_message(&encoded).expect("valid headers");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn get_peers_round_trips() {
+        let message = PeerMessage::GetPeers { limit: 16 };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid get peers");
+
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn peers_round_trips() {
+        let message = PeerMessage::Peers {
+            peers: vec![
+                "127.0.0.1:9333".parse().expect("valid peer"),
+                "127.0.0.1:9334".parse().expect("valid peer"),
+            ],
+        };
+
+        let encoded = encode_message(&message);
+        let decoded = decode_message(&encoded).expect("valid peers");
 
         assert_eq!(decoded, message);
     }
