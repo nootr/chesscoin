@@ -28,7 +28,19 @@ The Rust code follows strict hexagonal architecture principles. The core crate d
 
 ## Node v0.1
 
-Tagged releases publish prebuilt `chesscoin` binaries for Linux, macOS, and Windows on the [GitHub Releases](https://github.com/nootr/chesscoin/releases) page. Each release includes `SHA256SUMS.txt` for artifact verification.
+Tagged releases publish prebuilt `chesscoin` binaries for Linux, macOS, and Windows on the [GitHub Releases](https://github.com/nootr/chesscoin/releases) page. Each release includes `SHA256SUMS.txt` and GitHub artifact attestations for release verification.
+
+Verify an archive checksum from a release directory:
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+Verify GitHub provenance for a downloaded archive:
+
+```sh
+gh attestation verify chesscoin-v0.1.0-linux-x86_64.tar.gz --repo nootr/chesscoin
+```
 
 Start a node with continuous mining and local block-log persistence:
 
@@ -99,6 +111,7 @@ The current simulator intentionally uses a labeled toy 256-bit hash adapter. It 
 
 - [Architecture](docs/architecture.md)
 - [Running a node](docs/node-v0.1.md)
+- [Release checklist](docs/release-checklist.md)
 
 ## Development
 

@@ -1,6 +1,11 @@
 # Running a ChessCoin Node v0.1
 
-Download a tagged release from the [GitHub Releases](https://github.com/nootr/chesscoin/releases) page, then verify the archive with `SHA256SUMS.txt`. Releases include native archives for Linux, macOS, and Windows.
+Download a tagged release from the [GitHub Releases](https://github.com/nootr/chesscoin/releases) page, then verify the archive with `SHA256SUMS.txt` and the GitHub artifact attestation. Releases include native archives for Linux, macOS, and Windows.
+
+```sh
+shasum -a 256 -c SHA256SUMS.txt
+gh attestation verify chesscoin-v0.1.0-linux-x86_64.tar.gz --repo nootr/chesscoin
+```
 
 Start a node with continuous mining and local block-log persistence:
 

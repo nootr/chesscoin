@@ -610,12 +610,13 @@ cargo run -p chesscoin-cli -- node --listen 127.0.0.1:9334 --peer 127.0.0.1:9333
           <div class="operator-grid">
             <div class="operator-card">
               <h3>1. Download</h3>
-              <p>Tagged releases publish binaries for macOS, Linux, and Windows. Pick the archive for your platform and verify it with the published checksum file.</p>
+              <p>Tagged releases publish binaries for macOS, Linux, and Windows. Pick the archive for your platform and verify it with the published checksum file and GitHub artifact attestation.</p>
               <ul>
                 <li>macOS: <code>chesscoin-*-macos-x86_64.tar.gz</code></li>
                 <li>Linux: <code>chesscoin-*-linux-x86_64.tar.gz</code></li>
                 <li>Windows: <code>chesscoin-*-windows-x86_64.zip</code></li>
               </ul>
+              <div class="operator-command">gh attestation verify chesscoin-*.tar.gz --repo nootr/chesscoin</div>
               <a class="release-link" href="https://github.com/nootr/chesscoin/releases">GitHub Releases</a>
             </div>
             <div class="operator-card">

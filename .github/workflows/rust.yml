@@ -20,5 +20,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Format
         run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+      - name: Release build
+        run: cargo build --release --locked -p chesscoin-cli
